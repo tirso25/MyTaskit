@@ -6,6 +6,7 @@ Controles principales:
   e - Editar tarea (texto, fecha, grupo, comentarios, etiquetas)
   d - Eliminar tarea
   f - Filtrar tareas (por fecha, etiquetas y estado)
+  o - Ordenar tareas (alfabético, fecha, prioridad)
   / - Buscar tareas por texto
   i - Ver tareas de hoy
   Espacio - Marcar/Desmarcar tarea como completada
@@ -25,6 +26,11 @@ Gestión de etiquetas:
   T - Gestionar etiquetas globales (crear, editar, eliminar)
   (Las etiquetas se asignan desde la edición de tareas)
 
+Gestión de comentarios:
+  💬 Comentarios con enlaces (URLs)
+  🔗 Icono indica comentarios con enlaces
+  Enter - Abrir enlace del comentario seleccionado
+
 Modo calendario:
   c - Activar/Desactivar modo calendario
   ←/→/↑/↓ - Navegar días
@@ -38,18 +44,25 @@ Navegación de tareas:
   Enter - Marcar/Desmarcar como completada (modo normal)
 
 Filtros disponibles:
-  📅 Fecha - Todas, Sin fecha, o fecha específica
+  📅 Fecha - Múltiples fechas (Sin fecha o fechas específicas)
   🏷️ Etiquetas - Múltiples etiquetas (modo AND)
-  ✅ Estado - Todas, Pendientes, Completadas
+  ✅ Estado - Pendientes y/o Completadas
+  ⭐ Prioridad - Sin prioridad, Baja, Media, Alta
+
+Ordenación disponible:
+  🔤 Alfabético - A→Z o Z→A
+  📅 Fecha - Más próximas o más lejanas primero
+  ⭐ Prioridad - Alta→Baja o Baja→Alta
+  (Se pueden combinar múltiples criterios)
 
 Características:
   • Auto-guardado cada 10 segundos
   • Guardado automático al salir
   • Recordatorios de tareas que vencen hoy
-  • Comentarios en tareas
+  • Comentarios en tareas con enlaces opcionales
   • Hasta 2 etiquetas visibles por tarea
   • Visualización de fecha de vencimiento
-  • Contador de comentarios
+  • Contador de comentarios y enlaces
   • Separación visual de tareas completadas
   • Estadísticas en tiempo real
   • Búsqueda global de tareas
@@ -68,6 +81,7 @@ import json
 from pathlib import Path
 from datetime import datetime, date, timedelta
 import calendar
+import webbrowser
 
 MESES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
          "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
@@ -78,6 +92,7 @@ DIAS_SEMANA = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]
 class Comment:
     id: int
     text: str
+    url: Optional[str] = None
     created_at: str = ""
     
     def __post_init__(self):
@@ -91,7 +106,6 @@ class Tag:
     name: str
     
     def __post_init__(self):
-        # Limitar nombre a 30 caracteres
         self.name = self.name[:30]
 
 
@@ -105,6 +119,7 @@ class Task:
     due_date: Optional[str] = None
     comments: list = None
     tags: list = None
+    priority: int = 0
     
     def __post_init__(self):
         if not self.created_at:
@@ -137,39 +152,64 @@ class TaskWidget(Static):
         background: $surface-lighten-1;
     }
     TaskWidget .checkbox { width: 4; height: 1; }
+    TaskWidget .priority { width: 3; height: 1; }
     TaskWidget .task-text { width: 1fr; height: 1; }
     TaskWidget .tag { background: #90EE90; color: #000000; }
     TaskWidget .tag-separator { width: 1; }
+    TaskWidget .task-links { width: 3; height: 1; text-align: right; color: $accent; }
     TaskWidget .task-comments { width: 5; height: 1; text-align: right; color: $primary; }
+    TaskWidget .task-group { width: 20; height: 1; text-align: right; color: $text-muted; }
     TaskWidget .task-date { width: 8; height: 1; text-align: right; color: $warning; }
     TaskWidget .task-time { width: 12; height: 1; text-align: right; color: $text-muted; }
     TaskWidget.done .task-text { text-style: strike; color: $text-muted; }
     TaskWidget.done .checkbox { color: $success; }
     TaskWidget.done .task-date { color: $text-muted; }
     TaskWidget.done .task-comments { color: $text-muted; }
+    TaskWidget.done .task-links { color: $text-muted; }
+    TaskWidget.done .task-group { color: $text-muted; }
+    TaskWidget.done .priority { color: $text-muted; }
     """
     
-    def __init__(self, task_data: Task, all_tags: list[Tag] = None, **kwargs) -> None:
+    def __init__(self, task_data: Task, all_tags: list[Tag] = None, all_groups: list[Group] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.task_data = task_data
         self.all_tags = all_tags or []
+        self.all_groups = all_groups or []
         self._selected = False
     
     def compose(self) -> ComposeResult:
         checkbox = "☑" if self.task_data.done else "☐"
         yield Label(checkbox, classes="checkbox")
+        
+        priority_icons = {
+            0: "  ",
+            1: "[green]⬇[/green]",
+            2: "[yellow]■[/yellow]",
+            3: "[red]⬆[/red]"
+        }
+        priority_icon = priority_icons.get(self.task_data.priority, "  ")
+        yield Label(priority_icon, classes="priority")
+        
         yield Label(self.task_data.text, classes="task-text")
-        # Mostrar etiquetas
+        
         if self.task_data.tags:
-            for tag_id in self.task_data.tags[:2]:  # Máximo 2 etiquetas visibles
+            for tag_id in self.task_data.tags:
                 tag = next((t for t in self.all_tags if t.id == tag_id), None)
                 if tag:
-                    # Truncar nombre de etiqueta a 10 chars para que quepa
                     tag_name = tag.name[:10] if len(tag.name) > 10 else tag.name
                     yield Label(f" {tag_name} ", classes="tag")
-                    yield Label(" ", classes="tag-separator")  # Separador
+                    yield Label(" ", classes="tag-separator")
+        
+        links_count = sum(1 for c in self.task_data.comments if c.url)
+        links_str = f"🔗{links_count}" if links_count > 0 else ""
+        yield Label(links_str, classes="task-links")
+        
         comments_str = f"💬{len(self.task_data.comments)}" if self.task_data.comments else ""
         yield Label(comments_str, classes="task-comments")
+        
+        group_str = self._format_group_name()
+        yield Label(group_str, classes="task-group")
+        
         date_str = ""
         if self.task_data.due_date:
             try:
@@ -179,23 +219,15 @@ class TaskWidget(Static):
         yield Label(date_str, classes="task-date")
         yield Label(self.task_data.created_at, classes="task-time")
     
-    @property
-    def selected(self) -> bool:
-        return self._selected
-    
-    @selected.setter
-    def selected(self, value: bool) -> None:
-        self._selected = value
-        self.set_class(value, "selected")
-    
-    def toggle_done(self) -> None:
-        self.task_data.done = not self.task_data.done
-        self.set_class(self.task_data.done, "done")
-        self.query_one(".checkbox", Label).update("☑" if self.task_data.done else "☐")
-    
-    async def on_mount(self) -> None:
-        if self.task_data.done:
-            self.add_class("done")
+    def _format_group_name(self) -> str:
+        if self.task_data.group_id is None:
+            return "Grupo: Sin grupo "
+        
+        group = next((g for g in self.all_groups if g.id == self.task_data.group_id), None)
+        if group:
+            group_name = group.name[:12] if len(group.name) > 12 else group.name
+            return f"Grupo: {group_name} "
+        return "Grupo: Sin grupo "
     
     @property
     def selected(self) -> bool:
@@ -215,6 +247,107 @@ class TaskWidget(Static):
         if self.task_data.done:
             self.add_class("done")
 
+class PriorityPickerModal(ModalScreen[Optional[int]]):
+    DEFAULT_CSS = """
+    PriorityPickerModal { align: center middle; }
+    PriorityPickerModal > Container {
+        width: 40; height: auto; border: thick $primary;
+        background: $surface; padding: 1 2;
+    }
+    PriorityPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
+    PriorityPickerModal #priority-list { width: 100%; height: auto; padding: 1; }
+    PriorityPickerModal .priority-item {
+        width: 100%; height: 3; padding: 0 1;
+        border: solid $primary-background; margin-bottom: 1;
+        content-align: center middle;
+    }
+    PriorityPickerModal .priority-item:hover { background: $boost; }
+    PriorityPickerModal .priority-item.selected { border: solid $accent; background: $surface-lighten-1; }
+    PriorityPickerModal .hint { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
+    PriorityPickerModal .button-row { width: 100%; height: 3; align: center middle; }
+    PriorityPickerModal Button { margin: 0 1; }
+    """
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("up", "move_up", show=False),
+        Binding("down", "move_down", show=False),
+        Binding("k", "move_up", show=False),
+        Binding("j", "move_down", show=False),
+        Binding("enter", "select", show=False),
+    ]
+    
+    def __init__(self, current_priority: int = 0, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.current_priority = current_priority
+        self.selected_index = current_priority
+    
+    def compose(self) -> ComposeResult:
+        with Container():
+            yield Label("⭐ Seleccionar Prioridad", classes="modal-title")
+            yield Container(id="priority-list")
+            yield Label("↑↓ Navegar | Enter: Seleccionar | Esc: Cancelar", classes="hint")
+            with Horizontal(classes="button-row"):
+                yield Button("Seleccionar", variant="primary", id="select")
+                yield Button("Cancelar", variant="default", id="cancel")
+    
+    async def on_mount(self) -> None:
+        await self.refresh_list()
+    
+    async def refresh_list(self) -> None:
+        priority_list = self.query_one("#priority-list", Container)
+        await priority_list.remove_children()
+        
+        priorities = [
+            ("   Sin prioridad", 0),
+            ("[green]⬇[/green]  Baja", 1),
+            ("[yellow]■[/yellow]  Media", 2),
+            ("[red]⬆[/red]  Alta", 3)
+        ]
+        
+        for i, (text, value) in enumerate(priorities):
+            item = Static(text, id=f"priority-{i}", classes="priority-item")
+            await priority_list.mount(item)
+            if i == self.selected_index:
+                item.add_class("selected")
+    
+    def scroll_to_selected(self) -> None:
+        if self.selected_index >= 0:
+            try:
+                item = self.query_one(f"#priority-{self.selected_index}", Static)
+                item.scroll_visible()
+            except: pass
+    
+    def update_selection(self) -> None:
+        for i in range(4):
+            try:
+                item = self.query_one(f"#priority-{i}", Static)
+                item.set_class(i == self.selected_index, "selected")
+            except: pass
+        self.scroll_to_selected()
+    
+    def action_move_up(self) -> None:
+        if self.selected_index > 0:
+            self.selected_index -= 1
+            self.update_selection()
+    
+    def action_move_down(self) -> None:
+        if self.selected_index < 3:
+            self.selected_index += 1
+            self.update_selection()
+    
+    def action_select(self) -> None:
+        self.dismiss(self.selected_index)
+    
+    @on(Button.Pressed, "#select")
+    def on_select_btn(self) -> None:
+        self.action_select()
+    
+    @on(Button.Pressed, "#cancel")
+    def on_cancel_btn(self) -> None:
+        self.dismiss(None)
+    
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 class InputModal(ModalScreen[Optional[str]]):
     DEFAULT_CSS = """
@@ -264,7 +397,6 @@ class InputModal(ModalScreen[Optional[str]]):
         self.dismiss(None)
 
 class ReminderModal(ModalScreen[bool]):
-    """Modal para recordatorio de tarea que vence hoy"""
     DEFAULT_CSS = """
     ReminderModal { align: center middle; }
     ReminderModal > Container {
@@ -303,11 +435,10 @@ class ReminderModal(ModalScreen[bool]):
     ReminderModal Button { margin: 0 1; }
     """
     
-    # CRÍTICO: Capturar TODOS los eventos de teclado para evitar que pasen a la app principal
     BINDINGS = [
         Binding("escape", "close", show=False),
         Binding("enter", "close", show=False),
-        Binding("space", "close", show=False),  # Añadido para evitar toggle_done
+        Binding("space", "close", show=False),
     ]
     
     def __init__(self, task: Task, group_name: str, **kwargs) -> None:
@@ -332,15 +463,12 @@ class ReminderModal(ModalScreen[bool]):
     def action_close(self) -> None:
         self.dismiss(True)
     
-    # CRÍTICO: Consumir eventos de teclado para que NO lleguen a la app principal
     def on_key(self, event) -> None:
-        """Consumir todos los eventos de teclado excepto los bindings definidos"""
         if event.key not in ["escape", "enter", "space"]:
             event.prevent_default()
             event.stop()
 
 class GroupPickerModal(ModalScreen[Optional[int]]):
-    """Modal para seleccionar un grupo"""
     DEFAULT_CSS = """
     GroupPickerModal { align: center middle; }
     GroupPickerModal > Container {
@@ -371,9 +499,7 @@ class GroupPickerModal(ModalScreen[Optional[int]]):
         super().__init__(**kwargs)
         self.groups = groups
         self.current_group_id = current_group_id
-        # Lista de opciones: None (sin grupo) + todos los grupos
         self.options: list[Optional[int]] = [None] + [g.id for g in groups]
-        # Índice inicial basado en el grupo actual
         if current_group_id is None:
             self.selected_index = 0
         else:
@@ -391,13 +517,11 @@ class GroupPickerModal(ModalScreen[Optional[int]]):
     async def on_mount(self) -> None:
         groups_list = self.query_one("#groups-list", Container)
         
-        # Opción "Sin grupo"
         item = Static("📋 Sin grupo", id="group-item-0", classes="group-item")
         await groups_list.mount(item)
         if self.selected_index == 0:
             item.add_class("selected")
         
-        # Grupos existentes
         for i, group in enumerate(self.groups):
             item = Static(f"📁 {group.name}", id=f"group-item-{i+1}", classes="group-item")
             await groups_list.mount(item)
@@ -425,11 +549,74 @@ class GroupPickerModal(ModalScreen[Optional[int]]):
         self.dismiss(self.options[self.selected_index])
     
     def action_cancel(self) -> None:
-        self.dismiss(self.current_group_id)  # Devolver el grupo actual si se cancela
+        self.dismiss(self.current_group_id)
 
+class CommentEditModal(ModalScreen[Optional[dict]]):
+    DEFAULT_CSS = """
+    CommentEditModal { align: center middle; }
+    CommentEditModal > Container {
+        width: 70; height: auto; border: thick $primary;
+        background: $surface; padding: 1 2;
+    }
+    CommentEditModal .modal-title { text-align: center; text-style: bold; width: 100%; margin-bottom: 1; }
+    CommentEditModal .section-label { margin-top: 1; margin-bottom: 0; color: $text-muted; }
+    CommentEditModal Input { width: 100%; margin-bottom: 1; }
+    CommentEditModal .button-row { width: 100%; height: auto; align: center middle; margin-top: 1; }
+    CommentEditModal Button { margin: 0 1; }
+    """
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+    
+    def __init__(self, title: str = "💬 Comentario", initial_text: str = "", initial_url: str = "", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.title_text = title
+        self.initial_text = initial_text
+        self.initial_url = initial_url or ""
+    
+    def compose(self) -> ComposeResult:
+        with Container():
+            yield Label(self.title_text, classes="modal-title")
+            yield Label("Texto del comentario:", classes="section-label")
+            yield Input(value=self.initial_text, placeholder="Escribe el comentario...", id="text-input")
+            yield Label("Enlace (opcional):", classes="section-label")
+            yield Input(value=self.initial_url, placeholder="https://ejemplo.com o https://youtube.com/watch?v=...", id="url-input")
+            with Horizontal(classes="button-row"):
+                yield Button("Guardar", variant="primary", id="save")
+                yield Button("Cancelar", variant="default", id="cancel")
+    
+    def on_mount(self) -> None:
+        self.query_one("#text-input", Input).focus()
+    
+    @on(Button.Pressed, "#save")
+    def on_save(self) -> None:
+        text = self.query_one("#text-input", Input).value.strip()
+        url = self.query_one("#url-input", Input).value.strip()
+        
+        if not text:
+            self.app.notify("El texto del comentario no puede estar vacío", severity="warning")
+            return
+        
+        if url and not (url.startswith("http://") or url.startswith("https://")):
+            self.app.notify("La URL debe comenzar con http:// o https://", severity="warning")
+            return
+        
+        self.dismiss({
+            "text": text,
+            "url": url if url else None
+        })
+    
+    @on(Button.Pressed, "#cancel")
+    def on_cancel(self) -> None:
+        self.dismiss(None)
+    
+    @on(Input.Submitted)
+    def on_submit(self, event: Input.Submitted) -> None:
+        if event.input.id == "text-input":
+            self.on_save()
+    
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 class CommentsModal(ModalScreen[list[Comment]]):
-    """Modal para gestionar comentarios de una tarea"""
     DEFAULT_CSS = """
     CommentsModal { align: center middle; }
     CommentsModal > Container {
@@ -458,11 +645,13 @@ class CommentsModal(ModalScreen[list[Comment]]):
         Binding("a", "add_comment", show=False),
         Binding("e", "edit_comment", show=False),
         Binding("d", "delete_comment", show=False),
+        Binding("ctrl+o", "open_link", show=False),
+        Binding("enter", "open_link", show=False),
     ]
     
     def __init__(self, comments: list[Comment], next_comment_id: int, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.comments = [Comment(id=c.id, text=c.text, created_at=c.created_at) for c in comments]
+        self.comments = [Comment(id=c.id, text=c.text, url=c.url, created_at=c.created_at) for c in comments]
         self.next_comment_id = next_comment_id
         self.selected_index = 0 if comments else -1
     
@@ -470,7 +659,7 @@ class CommentsModal(ModalScreen[list[Comment]]):
         with Container():
             yield Label("💬 Comentarios", classes="modal-title")
             yield Container(id="comments-list")
-            yield Label("↑↓ Navegar | a: Añadir | e: Editar | d: Eliminar | Esc: Cerrar", classes="hint")
+            yield Label("↑↓ Navegar | a: Añadir | e: Editar | d: Eliminar | Enter: Abrir enlace | Esc: Cerrar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("➕ Añadir", variant="primary", id="add")
                 yield Button("✏️ Editar", variant="default", id="edit")
@@ -488,13 +677,15 @@ class CommentsModal(ModalScreen[list[Comment]]):
             self.selected_index = -1
         else:
             for i, comment in enumerate(self.comments):
-                # Truncar texto si es muy largo
-                text = comment.text[:50] + "..." if len(comment.text) > 50 else comment.text
-                item = Static(f"{text}  [{comment.created_at}]", id=f"comment-{i}", classes="comment-item")
+                text = comment.text[:40] + "..." if len(comment.text) > 40 else comment.text
+                
+                link_icon = " 🔗" if comment.url else ""
+                display_text = f"{text}{link_icon}  [{comment.created_at}]"
+                
+                item = Static(display_text, id=f"comment-{i}", classes="comment-item")
                 await comments_list.mount(item)
                 if i == self.selected_index:
                     item.add_class("selected")
-            # Scroll al elemento seleccionado
             self.scroll_to_selected()
     
     def scroll_to_selected(self) -> None:
@@ -523,24 +714,32 @@ class CommentsModal(ModalScreen[list[Comment]]):
             self.update_selection()
     
     def action_add_comment(self) -> None:
-        def on_result(text: Optional[str]) -> None:
-            if text:
-                comment = Comment(id=self.next_comment_id, text=text)
+        def on_result(result: Optional[dict]) -> None:
+            if result and result.get("text"):
+                comment = Comment(
+                    id=self.next_comment_id, 
+                    text=result["text"],
+                    url=result.get("url")
+                )
                 self.next_comment_id += 1
                 self.comments.append(comment)
                 self.selected_index = len(self.comments) - 1
                 self.call_later(self.refresh_comments_list)
-        self.app.push_screen(InputModal("💬 Nuevo Comentario", placeholder="Escribe el comentario..."), on_result)
+        self.app.push_screen(CommentEditModal("💬 Nuevo Comentario"), on_result)
     
     def action_edit_comment(self) -> None:
         if not self.comments or self.selected_index < 0:
             return
         comment = self.comments[self.selected_index]
-        def on_result(text: Optional[str]) -> None:
-            if text:
-                comment.text = text
+        def on_result(result: Optional[dict]) -> None:
+            if result and result.get("text"):
+                comment.text = result["text"]
+                comment.url = result.get("url")
                 self.call_later(self.refresh_comments_list)
-        self.app.push_screen(InputModal("✏️ Editar Comentario", initial_text=comment.text), on_result)
+        self.app.push_screen(
+            CommentEditModal("✏️ Editar Comentario", initial_text=comment.text, initial_url=comment.url),
+            on_result
+        )
     
     def action_delete_comment(self) -> None:
         if not self.comments or self.selected_index < 0:
@@ -557,6 +756,19 @@ class CommentsModal(ModalScreen[list[Comment]]):
                 self.call_later(self.refresh_comments_list)
         self.app.push_screen(ConfirmModal(f"¿Eliminar comentario '{txt}'?"), on_confirm)
     
+    def action_open_link(self) -> None:
+        if not self.comments or self.selected_index < 0:
+            return
+        comment = self.comments[self.selected_index]
+        if comment.url:
+            try:
+                webbrowser.open(comment.url)
+                self.app.notify(f"Abriendo: {comment.url}", severity="information")
+            except Exception as e:
+                self.app.notify(f"Error al abrir enlace: {str(e)}", severity="error")
+        else:
+            self.app.notify("Este comentario no tiene enlace", severity="warning")
+    
     @on(Button.Pressed, "#add")
     def on_add(self) -> None:
         self.action_add_comment()
@@ -572,9 +784,7 @@ class CommentsModal(ModalScreen[list[Comment]]):
     def action_close(self) -> None:
         self.dismiss(self.comments)
 
-
 class TagsManagerModal(ModalScreen[list[Tag]]):
-    """Modal para gestionar etiquetas globales"""
     DEFAULT_CSS = """
     TagsManagerModal { align: center middle; }
     TagsManagerModal > Container {
@@ -716,7 +926,6 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
 
 
 class TagPickerModal(ModalScreen[list[int]]):
-    """Modal para seleccionar etiquetas para una tarea"""
     DEFAULT_CSS = """
     TagPickerModal { align: center middle; }
     TagPickerModal > Container {
@@ -832,8 +1041,7 @@ class TagPickerModal(ModalScreen[list[int]]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
-class StatusFilterPickerModal(ModalScreen[Optional[str]]):
-    """Modal para seleccionar filtro de estado"""
+class StatusFilterPickerModal(ModalScreen[Optional[list[str]]]):
     DEFAULT_CSS = """
     StatusFilterPickerModal { align: center middle; }
     StatusFilterPickerModal > Container {
@@ -849,6 +1057,7 @@ class StatusFilterPickerModal(ModalScreen[Optional[str]]):
     }
     StatusFilterPickerModal .status-item:hover { background: $boost; }
     StatusFilterPickerModal .status-item.selected { border: solid $accent; background: $surface-lighten-1; }
+    StatusFilterPickerModal .status-item.checked { color: $success; }
     StatusFilterPickerModal .hint { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
     StatusFilterPickerModal .button-row { width: 100%; height: 3; align: center middle; }
     StatusFilterPickerModal Button { margin: 0 1; }
@@ -859,24 +1068,24 @@ class StatusFilterPickerModal(ModalScreen[Optional[str]]):
         Binding("down", "move_down", show=False),
         Binding("k", "move_up", show=False),
         Binding("j", "move_down", show=False),
-        Binding("enter", "select", show=False),
+        Binding("space", "toggle_status", show=False),
+        Binding("enter", "save", show=False),
     ]
     
-    def __init__(self, current_filter: Optional[str], **kwargs) -> None:
+    def __init__(self, current_filters: list[str], **kwargs) -> None:
         super().__init__(**kwargs)
-        self.current_filter = current_filter
+        self.selected_status_ids = list(current_filters)
         self.options = ["pending", "completed"]
         self.selected_index = 0
-        if current_filter in self.options:
-            self.selected_index = self.options.index(current_filter)
     
     def compose(self) -> ComposeResult:
         with Container():
             yield Label("✓ Filtrar por Estado", classes="modal-title")
             yield Container(id="status-list")
-            yield Label("↑↓ Navegar | Enter: Seleccionar | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | Enter: Guardar | Esc: Cancelar", classes="hint")
             with Horizontal(classes="button-row"):
-                yield Button("Seleccionar", variant="primary", id="select")
+                yield Button("Guardar", variant="primary", id="save")
+                yield Button("Cancelar", variant="default", id="cancel")
     
     async def on_mount(self) -> None:
         await self.refresh_list()
@@ -891,8 +1100,12 @@ class StatusFilterPickerModal(ModalScreen[Optional[str]]):
         ]
         
         for i, (text, value) in enumerate(options_display):
-            item = Static(text, id=f"status-{i}", classes="status-item")
+            checked = "☑" if value in self.selected_status_ids else "☐"
+            display_text = f"{checked}  {text}"
+            item = Static(display_text, id=f"status-{i}", classes="status-item")
             await status_list.mount(item)
+            if value in self.selected_status_ids:
+                item.add_class("checked")
             if i == self.selected_index:
                 item.add_class("selected")
     
@@ -921,23 +1134,150 @@ class StatusFilterPickerModal(ModalScreen[Optional[str]]):
             self.selected_index += 1
             self.update_selection()
     
-    def action_select(self) -> None:
-        if self.options and self.selected_index >= 0:
-            self.dismiss(self.options[self.selected_index])
+    def action_toggle_status(self) -> None:
+        if not self.options or self.selected_index < 0:
+            return
+        status_id = self.options[self.selected_index]
+        if status_id in self.selected_status_ids:
+            self.selected_status_ids.remove(status_id)
+        else:
+            self.selected_status_ids.append(status_id)
+        self.call_later(self.refresh_list)
     
-    @on(Button.Pressed, "#select")
-    def on_select_btn(self) -> None:
-        self.action_select()
+    def action_save(self) -> None:
+        self.dismiss(self.selected_status_ids)
+    
+    @on(Button.Pressed, "#save")
+    def on_save_btn(self) -> None:
+        self.action_save()
+    
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+class PriorityFilterPickerModal(ModalScreen[Optional[list[int]]]):
+    DEFAULT_CSS = """
+    PriorityFilterPickerModal { align: center middle; }
+    PriorityFilterPickerModal > Container {
+        width: 40; height: auto; border: thick $primary;
+        background: $surface; padding: 1 2;
+    }
+    PriorityFilterPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
+    PriorityFilterPickerModal #priority-list { width: 100%; height: auto; padding: 1; }
+    PriorityFilterPickerModal .priority-item {
+        width: 100%; height: 3; padding: 0 1;
+        border: solid $primary-background; margin-bottom: 1;
+        content-align: center middle;
+    }
+    PriorityFilterPickerModal .priority-item:hover { background: $boost; }
+    PriorityFilterPickerModal .priority-item.selected { border: solid $accent; background: $surface-lighten-1; }
+    PriorityFilterPickerModal .priority-item.checked { color: $success; }
+    PriorityFilterPickerModal .hint { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
+    PriorityFilterPickerModal .button-row { width: 100%; height: 3; align: center middle; }
+    PriorityFilterPickerModal Button { margin: 0 1; }
+    """
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("up", "move_up", show=False),
+        Binding("down", "move_down", show=False),
+        Binding("k", "move_up", show=False),
+        Binding("j", "move_down", show=False),
+        Binding("space", "toggle_priority", show=False),
+        Binding("enter", "save", show=False),
+    ]
+    
+    def __init__(self, current_filters: list[int], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.selected_priority_ids = list(current_filters)
+        self.options = [0, 1, 2, 3]
+        self.selected_index = 0
+    
+    def compose(self) -> ComposeResult:
+        with Container():
+            yield Label("⭐ Filtrar por Prioridad", classes="modal-title")
+            yield Container(id="priority-list")
+            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | Enter: Guardar | Esc: Cancelar", classes="hint")
+            with Horizontal(classes="button-row"):
+                yield Button("Guardar", variant="primary", id="save")
+                yield Button("Cancelar", variant="default", id="cancel")
+    
+    async def on_mount(self) -> None:
+        await self.refresh_list()
+    
+    async def refresh_list(self) -> None:
+        priority_list = self.query_one("#priority-list", Container)
+        await priority_list.remove_children()
+        
+        priorities = [
+            ("   Sin prioridad", 0),
+            ("[green]⬇[/green]  Baja", 1),
+            ("[yellow]■[/yellow]  Media", 2),
+            ("[red]⬆[/red]  Alta", 3)
+        ]
+        
+        for i, (text, value) in enumerate(priorities):
+            checked = "☑" if value in self.selected_priority_ids else "☐"
+            display_text = f"{checked}  {text}"
+            item = Static(display_text, id=f"priority-{i}", classes="priority-item")
+            await priority_list.mount(item)
+            if value in self.selected_priority_ids:
+                item.add_class("checked")
+            if i == self.selected_index:
+                item.add_class("selected")
+    
+    def scroll_to_selected(self) -> None:
+        if self.selected_index >= 0:
+            try:
+                item = self.query_one(f"#priority-{self.selected_index}", Static)
+                item.scroll_visible()
+            except: pass
+    
+    def update_selection(self) -> None:
+        for i in range(len(self.options)):
+            try:
+                item = self.query_one(f"#priority-{i}", Static)
+                item.set_class(i == self.selected_index, "selected")
+            except: pass
+        self.scroll_to_selected()
+    
+    def action_move_up(self) -> None:
+        if self.options and self.selected_index > 0:
+            self.selected_index -= 1
+            self.update_selection()
+    
+    def action_move_down(self) -> None:
+        if self.options and self.selected_index < len(self.options) - 1:
+            self.selected_index += 1
+            self.update_selection()
+    
+    def action_toggle_priority(self) -> None:
+        if not self.options or self.selected_index < 0:
+            return
+        priority_id = self.options[self.selected_index]
+        if priority_id in self.selected_priority_ids:
+            self.selected_priority_ids.remove(priority_id)
+        else:
+            self.selected_priority_ids.append(priority_id)
+        self.call_later(self.refresh_list)
+    
+    def action_save(self) -> None:
+        self.dismiss(self.selected_priority_ids)
+    
+    @on(Button.Pressed, "#save")
+    def on_save_btn(self) -> None:
+        self.action_save()
+    
+    @on(Button.Pressed, "#cancel")
+    def on_cancel_btn(self) -> None:
+        self.dismiss(None)
     
     def action_cancel(self) -> None:
         self.dismiss(None)
 
 class FilterModal(ModalScreen[Optional[dict]]):
-    """Modal para filtrar tareas por fecha, etiquetas o estado"""
     DEFAULT_CSS = """
     FilterModal { align: center middle; }
     FilterModal > Container {
-        width: 50; height: auto; border: thick $primary;
+        width: 70; height: auto; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     FilterModal .modal-title { text-align: center; text-style: bold; width: 100%; margin-bottom: 1; }
@@ -949,13 +1289,14 @@ class FilterModal(ModalScreen[Optional[dict]]):
     """
     BINDINGS = [Binding("escape", "cancel", show=False)]
     
-    def __init__(self, current_date_filter: Optional[str], current_tag_filters: list[int],
-                 current_status_filter: Optional[str], all_tags: list[Tag], 
-                 available_dates: list[str], **kwargs) -> None:
+    def __init__(self, current_date_filters: list[str], current_tag_filters: list[int],
+                 current_status_filters: list[str], current_priority_filters: list[int],
+                 all_tags: list[Tag], available_dates: list[str], **kwargs) -> None:
         super().__init__(**kwargs)
-        self.date_filter = current_date_filter
+        self.date_filters = list(current_date_filters)
         self.tag_filters = list(current_tag_filters)
-        self.status_filter = current_status_filter
+        self.status_filters = list(current_status_filters)
+        self.priority_filters = list(current_priority_filters)
         self.all_tags = all_tags
         self.available_dates = available_dates
     
@@ -965,7 +1306,7 @@ class FilterModal(ModalScreen[Optional[dict]]):
             yield Label("Fecha:", classes="section-label")
             with Horizontal(classes="filter-row"):
                 yield Label(self._format_date_filter(), id="date-display", classes="filter-display")
-                yield Button("📅 Cambiar", id="change-date")
+                yield Button("📅 Seleccionar", id="change-date")
                 yield Button("❌ Quitar", id="remove-date")
             yield Label("Etiquetas:", classes="section-label")
             with Horizontal(classes="filter-row"):
@@ -975,23 +1316,30 @@ class FilterModal(ModalScreen[Optional[dict]]):
             yield Label("Estado:", classes="section-label")
             with Horizontal(classes="filter-row"):
                 yield Label(self._format_status_filter(), id="status-display", classes="filter-display")
-                yield Button("✓ Cambiar", id="change-status")
+                yield Button("✓ Seleccionar", id="change-status")
                 yield Button("❌ Quitar", id="remove-status")
+            yield Label("Prioridad:", classes="section-label")
+            with Horizontal(classes="filter-row"):
+                yield Label(self._format_priority_filter(), id="priority-display", classes="filter-display")
+                yield Button("⭐ Seleccionar", id="change-priority")
+                yield Button("❌ Quitar", id="remove-priority")
             with Horizontal(classes="button-row"):
                 yield Button("Aplicar", variant="primary", id="apply")
                 yield Button("Quitar todos", variant="warning", id="clear")
     
     def _format_date_filter(self) -> str:
-        if self.date_filter is None:
+        if not self.date_filters:
             return "Todas las fechas"
-        elif self.date_filter == "none":
-            return "📅 Sin fecha asignada"
-        else:
-            try:
-                d = datetime.strptime(self.date_filter, "%Y-%m-%d")
-                return f"📅 {d.day:02d}/{d.month:02d}/{d.year}"
-            except:
-                return "Todas las fechas"
+        date_strs = []
+        for fd in self.date_filters:
+            if fd == "none":
+                date_strs.append("Sin fecha")
+            else:
+                try:
+                    d = datetime.strptime(fd, "%Y-%m-%d")
+                    date_strs.append(f"{d.day:02d}/{d.month:02d}")
+                except: pass
+        return f"📅 {', '.join(date_strs)}" if date_strs else "Todas las fechas"
     
     def _format_tag_filter(self) -> str:
         if not self.tag_filters:
@@ -1006,25 +1354,34 @@ class FilterModal(ModalScreen[Optional[dict]]):
         return "Todas las etiquetas"
     
     def _format_status_filter(self) -> str:
-        if self.status_filter is None:
-            return "Todas"
-        elif self.status_filter == "completed":
-            return "✅ Completadas"
-        elif self.status_filter == "pending":
-            return "⏳ Pendientes"
-        return "Todas"
+        if not self.status_filters:
+            return "Todos los estados"
+        status_names = []
+        for status in self.status_filters:
+            if status == "completed":
+                status_names.append("Completadas")
+            elif status == "pending":
+                status_names.append("Pendientes")
+        return f"✅ {', '.join(status_names)}" if status_names else "Todos los estados"
+    
+    def _format_priority_filter(self) -> str:
+        if not self.priority_filters:
+            return "Todas las prioridades"
+        priority_names = {0: "Sin prioridad", 1: "⬇ Baja", 2: "■ Media", 3: "⬆ Alta"}
+        priority_strs = [priority_names.get(p, '') for p in self.priority_filters]
+        return f"⭐ {', '.join(priority_strs)}" if priority_strs else "Todas las prioridades"
     
     @on(Button.Pressed, "#change-date")
     def on_change_date(self) -> None:
-        def on_result(result: Optional[str]) -> None:
+        def on_result(result: Optional[list[str]]) -> None:
             if result is not None:
-                self.date_filter = result
+                self.date_filters = result
                 self.query_one("#date-display", Label).update(self._format_date_filter())
-        self.app.push_screen(DateFilterPickerModal(self.available_dates, self.date_filter), on_result)
+        self.app.push_screen(DateFilterPickerModal(self.available_dates, self.date_filters), on_result)
     
     @on(Button.Pressed, "#remove-date")
     def on_remove_date(self) -> None:
-        self.date_filter = None
+        self.date_filters = []
         self.query_one("#date-display", Label).update(self._format_date_filter())
     
     @on(Button.Pressed, "#change-tag")
@@ -1042,30 +1399,47 @@ class FilterModal(ModalScreen[Optional[dict]]):
     
     @on(Button.Pressed, "#change-status")
     def on_change_status(self) -> None:
-        def on_result(result: Optional[str]) -> None:
+        def on_result(result: Optional[list[str]]) -> None:
             if result is not None:
-                self.status_filter = result
+                self.status_filters = result
                 self.query_one("#status-display", Label).update(self._format_status_filter())
-        self.app.push_screen(StatusFilterPickerModal(self.status_filter), on_result)
+        self.app.push_screen(StatusFilterPickerModal(self.status_filters), on_result)
     
     @on(Button.Pressed, "#remove-status")
     def on_remove_status(self) -> None:
-        self.status_filter = None
+        self.status_filters = []
         self.query_one("#status-display", Label).update(self._format_status_filter())
+    
+    @on(Button.Pressed, "#change-priority")
+    def on_change_priority(self) -> None:
+        def on_result(result: Optional[list[int]]) -> None:
+            if result is not None:
+                self.priority_filters = result
+                self.query_one("#priority-display", Label).update(self._format_priority_filter())
+        self.app.push_screen(PriorityFilterPickerModal(self.priority_filters), on_result)
+    
+    @on(Button.Pressed, "#remove-priority")
+    def on_remove_priority(self) -> None:
+        self.priority_filters = []
+        self.query_one("#priority-display", Label).update(self._format_priority_filter())
     
     @on(Button.Pressed, "#apply")
     def on_apply(self) -> None:
-        self.dismiss({"date": self.date_filter, "tags": self.tag_filters, "status": self.status_filter})
+        self.dismiss({
+            "dates": self.date_filters,
+            "tags": self.tag_filters,
+            "statuses": self.status_filters,
+            "priorities": self.priority_filters
+        })
     
     @on(Button.Pressed, "#clear")
     def on_clear(self) -> None:
-        self.dismiss({"date": None, "tags": [], "status": None})
+        self.dismiss({"dates": [], "tags": [], "statuses": [], "priorities": []})
     
     def action_cancel(self) -> None:
         self.dismiss(None)
 
-class DateFilterPickerModal(ModalScreen[Optional[str]]):
-    """Modal para seleccionar filtro de fecha"""
+class DateFilterPickerModal(ModalScreen[Optional[list[str]]]):
     DEFAULT_CSS = """
     DateFilterPickerModal { align: center middle; }
     DateFilterPickerModal > Container {
@@ -1080,6 +1454,7 @@ class DateFilterPickerModal(ModalScreen[Optional[str]]):
     }
     DateFilterPickerModal .date-item:hover { background: $boost; }
     DateFilterPickerModal .date-item.selected { border: solid $accent; background: $surface-lighten-1; }
+    DateFilterPickerModal .date-item.checked { color: $success; }
     DateFilterPickerModal .hint { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
     DateFilterPickerModal .button-row { width: 100%; height: 3; align: center middle; }
     DateFilterPickerModal Button { margin: 0 1; }
@@ -1090,26 +1465,24 @@ class DateFilterPickerModal(ModalScreen[Optional[str]]):
         Binding("down", "move_down", show=False),
         Binding("k", "move_up", show=False),
         Binding("j", "move_down", show=False),
-        Binding("enter", "select", show=False),
+        Binding("space", "toggle_date", show=False),
+        Binding("enter", "save", show=False),
     ]
     
-    def __init__(self, available_dates: list[str], current_filter: Optional[str], **kwargs) -> None:
+    def __init__(self, available_dates: list[str], current_filters: list[str], **kwargs) -> None:
         super().__init__(**kwargs)
         self.available_dates = available_dates
-        self.current_filter = current_filter
-        # Opciones: "none" (sin fecha) + fechas disponibles
+        self.selected_date_ids = list(current_filters)
         self.options = ["none"] + sorted(set(available_dates), reverse=True)
         self.selected_index = 0
-        if current_filter in self.options:
-            self.selected_index = self.options.index(current_filter)
     
     def compose(self) -> ComposeResult:
         with Container():
             yield Label("📅 Filtrar por Fecha", classes="modal-title")
             yield Container(id="dates-list")
-            yield Label("↑↓ Navegar | Enter: Seleccionar | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | Enter: Guardar | Esc: Cancelar", classes="hint")
             with Horizontal(classes="button-row"):
-                yield Button("Seleccionar", variant="primary", id="select")
+                yield Button("Guardar", variant="primary", id="save")
                 yield Button("Cancelar", variant="default", id="cancel")
     
     async def on_mount(self) -> None:
@@ -1120,16 +1493,20 @@ class DateFilterPickerModal(ModalScreen[Optional[str]]):
         await dates_list.remove_children()
         
         for i, opt in enumerate(self.options):
+            checked = "☑" if opt in self.selected_date_ids else "☐"
             if opt == "none":
-                text = "📅 Sin fecha asignada"
+                text = f"{checked}  Sin fecha asignada"
             else:
                 try:
                     d = datetime.strptime(opt, "%Y-%m-%d")
-                    text = f"📅 {d.day:02d}/{d.month:02d}/{d.year}"
+                    text = f"{checked}  {d.day:02d}/{d.month:02d}/{d.year}"
                 except:
-                    text = opt
+                    text = f"{checked}  {opt}"
+            
             item = Static(text, id=f"date-{i}", classes="date-item")
             await dates_list.mount(item)
+            if opt in self.selected_date_ids:
+                item.add_class("checked")
             if i == self.selected_index:
                 item.add_class("selected")
     
@@ -1158,13 +1535,22 @@ class DateFilterPickerModal(ModalScreen[Optional[str]]):
             self.selected_index += 1
             self.update_selection()
     
-    def action_select(self) -> None:
-        if self.options:
-            self.dismiss(self.options[self.selected_index])
+    def action_toggle_date(self) -> None:
+        if not self.options or self.selected_index < 0:
+            return
+        date_id = self.options[self.selected_index]
+        if date_id in self.selected_date_ids:
+            self.selected_date_ids.remove(date_id)
+        else:
+            self.selected_date_ids.append(date_id)
+        self.call_later(self.refresh_list)
     
-    @on(Button.Pressed, "#select")
-    def on_select_btn(self) -> None:
-        self.action_select()
+    def action_save(self) -> None:
+        self.dismiss(self.selected_date_ids)
+    
+    @on(Button.Pressed, "#save")
+    def on_save_btn(self) -> None:
+        self.action_save()
     
     @on(Button.Pressed, "#cancel")
     def on_cancel_btn(self) -> None:
@@ -1185,10 +1571,12 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
     EditTaskModal Input { width: 100%; margin-bottom: 1; }
     EditTaskModal .date-row { width: 100%; height: auto; align: left middle; margin-bottom: 1; }
     EditTaskModal .group-row { width: 100%; height: auto; align: left middle; margin-bottom: 1; }
+    EditTaskModal .priority-row { width: 100%; height: auto; align: left middle; margin-bottom: 1; }
     EditTaskModal .comments-row { width: 100%; height: auto; align: left middle; margin-bottom: 1; }
     EditTaskModal .tags-row { width: 100%; height: auto; align: left middle; margin-bottom: 1; }
     EditTaskModal .date-display { width: 1fr; padding: 0 1; }
     EditTaskModal .group-display { width: 1fr; padding: 0 1; }
+    EditTaskModal .priority-display { width: 1fr; padding: 0 1; }
     EditTaskModal .comments-display { width: 1fr; padding: 0 1; }
     EditTaskModal .tags-display { width: 1fr; padding: 0 1; }
     EditTaskModal .button-row { width: 100%; height: auto; align: center middle; margin-top: 1; }
@@ -1199,7 +1587,8 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
     def __init__(self, task_text: str, current_date: Optional[str] = None,
                  current_group_id: Optional[int] = None, groups: list[Group] = None,
                  comments: list[Comment] = None, next_comment_id: int = 1,
-                 all_tags: list[Tag] = None, selected_tag_ids: list[int] = None, **kwargs) -> None:
+                 all_tags: list[Tag] = None, selected_tag_ids: list[int] = None,
+                 current_priority: int = 0, **kwargs) -> None:
         super().__init__(**kwargs)
         self.task_text = task_text
         self.selected_date = current_date
@@ -1209,6 +1598,7 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
         self.next_comment_id = next_comment_id
         self.all_tags = all_tags or []
         self.selected_tag_ids = list(selected_tag_ids) if selected_tag_ids else []
+        self.selected_priority = current_priority
     
     def compose(self) -> ComposeResult:
         with Container():
@@ -1219,6 +1609,10 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
             with Horizontal(classes="group-row"):
                 yield Label(self._format_group(self.selected_group_id), id="group-display", classes="group-display")
                 yield Button("📁 Cambiar", id="change-group")
+            yield Label("Prioridad:", classes="section-label")
+            with Horizontal(classes="priority-row"):
+                yield Label(self._format_priority(), id="priority-display", classes="priority-display")
+                yield Button("⭐ Cambiar", id="change-priority")
             yield Label("Fecha:", classes="section-label")
             with Horizontal(classes="date-row"):
                 yield Label(self._format_date(self.selected_date), id="date-display", classes="date-display")
@@ -1251,6 +1645,15 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
             return f"📁 {group.name}"
         return "📋 Sin grupo"
     
+    def _format_priority(self) -> str:
+        priority_names = {
+            0: "Sin prioridad",
+            1: "⬇ Baja",
+            2: "■ Media",
+            3: "⬆ Alta"
+        }
+        return priority_names.get(self.selected_priority, "Sin prioridad")
+    
     def _format_comments(self) -> str:
         count = len(self.comments)
         if count == 0:
@@ -1282,6 +1685,14 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
             self.selected_group_id = result
             self.query_one("#group-display", Label).update(self._format_group(self.selected_group_id))
         self.app.push_screen(GroupPickerModal(self.groups, self.selected_group_id), on_result)
+    
+    @on(Button.Pressed, "#change-priority")
+    def on_change_priority(self) -> None:
+        def on_result(result: Optional[int]) -> None:
+            if result is not None:
+                self.selected_priority = result
+                self.query_one("#priority-display", Label).update(self._format_priority())
+        self.app.push_screen(PriorityPickerModal(self.selected_priority), on_result)
     
     @on(Button.Pressed, "#change-date")
     def on_change_date(self) -> None:
@@ -1321,7 +1732,8 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
             "date": self.selected_date,
             "group_id": self.selected_group_id,
             "comments": self.comments,
-            "tags": self.selected_tag_ids
+            "tags": self.selected_tag_ids,
+            "priority": self.selected_priority
         } if text else None)
     
     @on(Button.Pressed, "#cancel")
@@ -1330,7 +1742,6 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
     
     def action_cancel(self) -> None:
         self.dismiss(None)
-
 
 class DatePickerModal(ModalScreen[Optional[str]]):
     DEFAULT_CSS = """
@@ -1633,10 +2044,8 @@ class DayTasksModal(ModalScreen[Optional[Task]]):
                 item = Horizontal(id=f"task-item-{i}", classes="task-item")
                 await tasks_list.mount(item)
                 
-                # Texto de la tarea (lado izquierdo)
                 await item.mount(Label(f"{checkbox} {task.text}", classes="task-main"))
                 
-                # Grupo (lado derecho)
                 await item.mount(Label(f"Grupo: {group_name}", classes="task-group"))
                 
                 if i == 0:
@@ -1713,9 +2122,7 @@ class SearchResultsScreen(ModalScreen[Optional[Task]]):
     async def on_mount(self) -> None:
         results_list = self.query_one("#results-list", Container)
         for i, (task, group_name) in enumerate(self.results):
-            # Truncar texto si es muy largo
             text = task.text[:30] + "..." if len(task.text) > 30 else task.text
-            # Calcular espacios para alinear a la derecha
             group_text = f"Grupo: {group_name}"
             total_width = 75
             padding = " " * max(1, total_width - len(text) - len(group_text))
@@ -1790,6 +2197,183 @@ class GroupTab(Static):
         self._active = value
         self.set_class(value, "active")
 
+class SortPickerModal(ModalScreen[Optional[dict[str, Optional[str]]]]):
+    DEFAULT_CSS = """
+    SortPickerModal { align: center middle; }
+    SortPickerModal > Container {
+        width: 70; height: auto; border: thick $primary;
+        background: $surface; padding: 1 2;
+    }
+    SortPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
+    SortPickerModal .info-text { width: 100%; text-align: center; color: $text-muted; margin-bottom: 1; }
+    SortPickerModal .category-title { 
+        width: 100%; text-align: left; 
+        text-style: bold; color: $accent;
+        margin: 1 0; padding: 0 1;
+    }
+    SortPickerModal #sort-list { width: 100%; height: auto; max-height: 20; overflow-y: auto; padding: 1; }
+    SortPickerModal .sort-item {
+        width: 100%; height: 3; padding: 0 2;
+        border: solid $primary-background; margin-bottom: 1;
+    }
+    SortPickerModal .sort-item:hover { background: $boost; }
+    SortPickerModal .sort-item.selected { border: solid $accent; background: $surface-lighten-1; }
+    SortPickerModal .sort-item.checked { color: $success; }
+    SortPickerModal .hint { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
+    SortPickerModal .button-row { width: 100%; height: 3; align: center middle; }
+    SortPickerModal Button { margin: 0 1; }
+    """
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("up", "move_up", show=False),
+        Binding("down", "move_down", show=False),
+        Binding("k", "move_up", show=False),
+        Binding("j", "move_down", show=False),
+        Binding("space", "toggle_sort", show=False),
+        Binding("enter", "save", show=False),
+    ]
+    
+    def __init__(self, current_criteria: dict[str, Optional[str]], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.criteria = {
+            "alphabetical": current_criteria.get("alphabetical"),
+            "date": current_criteria.get("date"),
+            "priority": current_criteria.get("priority")
+        }
+        
+        self.flat_options = [
+            ("alphabetical", "alpha_asc"),
+            ("alphabetical", "alpha_desc"),
+            ("date", "date_asc"),
+            ("date", "date_desc"),
+            ("priority", "priority_desc"),
+            ("priority", "priority_asc")
+        ]
+        self.selected_index = 0
+    
+    def compose(self) -> ComposeResult:
+        with Container():
+            yield Label("📊 Ordenar Tareas", classes="modal-title")
+            yield Label("Prioridad: Prioridad → Fecha → Alfabético", classes="info-text")
+            yield Container(id="sort-list")
+            yield Label("↑↓ Navegar | Espacio: Seleccionar | Enter: Guardar | Esc: Cancelar", classes="hint")
+            with Horizontal(classes="button-row"):
+                yield Button("Guardar", variant="primary", id="save")
+                yield Button("Limpiar todo", variant="warning", id="clear")
+    
+    async def on_mount(self) -> None:
+        await self.refresh_list()
+    
+    async def refresh_list(self) -> None:
+        sort_list = self.query_one("#sort-list", Container)
+        await sort_list.remove_children()
+        
+        await sort_list.mount(Static("🔤 Alfabético:", classes="category-title"))
+        
+        alpha_options = [
+            ("  A → Z", "alphabetical", "alpha_asc", 0),
+            ("  Z → A", "alphabetical", "alpha_desc", 1)
+        ]
+        
+        for text, category, value, idx in alpha_options:
+            checked = "☑" if self.criteria.get(category) == value else "☐"
+            display_text = f"{checked} {text}"
+            item = Static(display_text, id=f"sort-{idx}", classes="sort-item")
+            await sort_list.mount(item)
+            if self.criteria.get(category) == value:
+                item.add_class("checked")
+            if idx == self.selected_index:
+                item.add_class("selected")
+        
+        await sort_list.mount(Static("📅 Fecha:", classes="category-title"))
+        
+        date_options = [
+            ("  Más próximas primero ↑", "date", "date_asc", 2),
+            ("  Más lejanas primero ↓", "date", "date_desc", 3)
+        ]
+        
+        for text, category, value, idx in date_options:
+            checked = "☑" if self.criteria.get(category) == value else "☐"
+            display_text = f"{checked} {text}"
+            item = Static(display_text, id=f"sort-{idx}", classes="sort-item")
+            await sort_list.mount(item)
+            if self.criteria.get(category) == value:
+                item.add_class("checked")
+            if idx == self.selected_index:
+                item.add_class("selected")
+        
+        await sort_list.mount(Static("⭐ Prioridad:", classes="category-title"))
+        
+        priority_options = [
+            ("  Alta → Baja", "priority", "priority_desc", 4),
+            ("  Baja → Alta", "priority", "priority_asc", 5)
+        ]
+        
+        for text, category, value, idx in priority_options:
+            checked = "☑" if self.criteria.get(category) == value else "☐"
+            display_text = f"{checked} {text}"
+            item = Static(display_text, id=f"sort-{idx}", classes="sort-item")
+            await sort_list.mount(item)
+            if self.criteria.get(category) == value:
+                item.add_class("checked")
+            if idx == self.selected_index:
+                item.add_class("selected")
+    
+    def scroll_to_selected(self) -> None:
+        if self.selected_index >= 0:
+            try:
+                item = self.query_one(f"#sort-{self.selected_index}", Static)
+                item.scroll_visible()
+            except: pass
+    
+    def update_selection(self) -> None:
+        for i in range(len(self.flat_options)):
+            try:
+                item = self.query_one(f"#sort-{i}", Static)
+                item.set_class(i == self.selected_index, "selected")
+            except: pass
+        self.scroll_to_selected()
+    
+    def action_move_up(self) -> None:
+        if self.selected_index > 0:
+            self.selected_index -= 1
+            self.update_selection()
+    
+    def action_move_down(self) -> None:
+        if self.selected_index < len(self.flat_options) - 1:
+            self.selected_index += 1
+            self.update_selection()
+    
+    def action_toggle_sort(self) -> None:
+        if self.selected_index < 0 or self.selected_index >= len(self.flat_options):
+            return
+        
+        category, value = self.flat_options[self.selected_index]
+        
+        if self.criteria.get(category) == value:
+            self.criteria[category] = None
+        else:
+            self.criteria[category] = value
+        
+        self.call_later(self.refresh_list)
+    
+    def action_save(self) -> None:
+        self.dismiss(self.criteria)
+    
+    @on(Button.Pressed, "#save")
+    def on_save_btn(self) -> None:
+        self.action_save()
+    
+    @on(Button.Pressed, "#clear")
+    def on_clear_btn(self) -> None:
+        self.dismiss({"alphabetical": None, "date": None, "priority": None})
+    
+    @on(Button.Pressed, "#cancel")
+    def on_cancel_btn(self) -> None:
+        self.dismiss(None)
+    
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 class TodoApp(App):
     CSS = """
@@ -1813,11 +2397,12 @@ class TodoApp(App):
         Binding("e", "edit_task", "Editar"),
         Binding("d", "delete_task", "Eliminar"),
         Binding("f", "filter_tasks", "Filtrar"),
+        Binding("o", "sort_tasks", "Ordenar"),
         Binding("g", "new_group", "Nuevo Grupo"),
         Binding("G", "group_options", "Opc. Grupo"),
         Binding("T", "manage_tags", "Etiquetas"),
         Binding("c", "toggle_calendar", "Calendario"),
-        Binding("i", "today_tasks", "Hoy"),  # NUEVO
+        Binding("i", "today_tasks", "Hoy"),
         Binding("/", "search", "Buscar"),
         Binding("left", "nav_left", show=False),
         Binding("right", "nav_right", show=False),
@@ -1857,9 +2442,16 @@ class TodoApp(App):
         self.cal_month = date.today().month
         self.cal_day = date.today().day
         
-        self.filter_date: Optional[str] = None
+        self.filter_dates: list[str] = []
         self.filter_tag_ids: list[int] = []
-        self.filter_status: Optional[str] = None  # NUEVO: None, "completed", "pending"
+        self.filter_statuses: list[str] = []
+        self.filter_priorities: list[int] = []
+        
+        self.sort_criteria: dict[str, Optional[str]] = {
+            "alphabetical": None,
+            "date": None,
+            "priority": None
+        }
         
         self.load_data()
         
@@ -1880,31 +2472,24 @@ class TodoApp(App):
         await self.refresh_tabs()
         await self.refresh_view()
         self.update_stats()
-        # Mostrar recordatorios después de que la UI esté lista
         self.set_timer(0.1, self.show_today_reminders)
-        # Auto-guardar cada 10 segundos como backup
         self.set_interval(10, self.save_data)
 
     def on_exit(self) -> None:
-        """Guardar datos al salir de la aplicación"""
         self.save_data()
 
     def action_today_tasks(self) -> None:
-        """Ver tareas de hoy"""
         today = date.today()
         tasks = self._get_tasks_for_date(today.year, today.month, today.day)
         date_str = f"{today.day}/{today.month}/{today.year}"
         self.push_screen(DayTasksModal(tasks, date_str), lambda t: self._go_to_task(t) if t else None)
     
     def show_today_reminders(self) -> None:
-        """Mostrar recordatorios de tareas que vencen hoy"""
         today_str = date.today().strftime("%Y-%m-%d")
         today_tasks = []
         
-        # Buscar todas las tareas que vencen hoy y no están completadas
         for task in self.tasks:
             if task.due_date == today_str and not task.done:
-                # Obtener el nombre del grupo
                 if task.group_id is None:
                     group_name = "Sin grupo"
                 else:
@@ -1912,13 +2497,10 @@ class TodoApp(App):
                     group_name = group.name if group else "Sin grupo"
                 today_tasks.append((task, group_name))
         
-        # Mostrar un modal por cada tarea que vence hoy
-        # Usar callback para asegurar que se cierra antes del siguiente
         def show_next(index=0):
             if index < len(today_tasks):
                 task, group_name = today_tasks[index]
                 def on_close(result):
-                    # Mostrar el siguiente recordatorio cuando se cierre este
                     show_next(index + 1)
                 self.push_screen(ReminderModal(task, group_name), on_close)
         
@@ -1933,17 +2515,14 @@ class TodoApp(App):
             await tabs.mount(tab)
             tab.active = True
         else:
-            # Tab General (todas las tareas)
             tab = GroupTab(self.GENERAL_GROUP_ID, "📚 General", id="tab-general")
             await tabs.mount(tab)
             tab.active = (self.current_group_id == self.GENERAL_GROUP_ID)
             
-            # Tab Sin grupo
             tab = GroupTab(None, "📋 Sin grupo", id="tab-all")
             await tabs.mount(tab)
             tab.active = (self.current_group_id is None)
             
-            # Tabs de grupos
             for g in self.groups:
                 icon = "📂" if self.current_group_id == g.id else "📁"
                 t = GroupTab(g.id, f"{icon} {g.name}", id=f"tab-{g.id}")
@@ -1951,7 +2530,6 @@ class TodoApp(App):
                 t.active = (self.current_group_id == g.id)
     
     def _get_current_tasks(self) -> list[Task]:
-        # Filtrar por grupo
         if self.current_group_id == self.GENERAL_GROUP_ID:
             tasks = list(self.tasks)
         elif self.current_group_id is None:
@@ -1959,22 +2537,32 @@ class TodoApp(App):
         else:
             tasks = [t for t in self.tasks if t.group_id == self.current_group_id]
         
-        # Aplicar filtro de fecha
-        if self.filter_date is not None:
-            if self.filter_date == "none":
-                tasks = [t for t in tasks if t.due_date is None]
-            else:
-                tasks = [t for t in tasks if t.due_date == self.filter_date]
+        if self.filter_dates:
+            filtered = []
+            for t in tasks:
+                for filter_date in self.filter_dates:
+                    if filter_date == "none" and t.due_date is None:
+                        filtered.append(t)
+                        break
+                    elif t.due_date == filter_date:
+                        filtered.append(t)
+                        break
+            tasks = filtered
         
-        # Aplicar filtro de etiquetas
         if self.filter_tag_ids:
             tasks = [t for t in tasks if all(tag_id in t.tags for tag_id in self.filter_tag_ids)]
         
-        # Aplicar filtro de estado (NUEVO)
-        if self.filter_status == "completed":
-            tasks = [t for t in tasks if t.done]
-        elif self.filter_status == "pending":
-            tasks = [t for t in tasks if not t.done]
+        if self.filter_statuses:
+            filtered = []
+            for t in tasks:
+                for status in self.filter_statuses:
+                    if (status == "completed" and t.done) or (status == "pending" and not t.done):
+                        filtered.append(t)
+                        break
+            tasks = filtered
+        
+        if self.filter_priorities:
+            tasks = [t for t in tasks if t.priority in self.filter_priorities]
         
         return tasks
     
@@ -2004,26 +2592,25 @@ class TodoApp(App):
             task_list.styles.display = "block"
             calendar_view.remove_class("visible")
             calendar_view.styles.display = "none"
-            # Forzar limpieza completa antes de refrescar
             await task_list.remove_children()
             await self._refresh_task_list(task_list)
     
     async def _refresh_task_list(self, task_list: Container) -> None:
-        current = self._get_current_tasks()
-        pending = [t for t in current if not t.done]
-        completed = [t for t in current if t.done]
+        ordered = self._get_ordered_tasks()
+        pending = [t for t in ordered if not t.done]
+        completed = [t for t in ordered if t.done]
         
-        if not current:
+        if not ordered:
             msg = "No hay tareas. Pulsa 'a' para añadir una."
             await task_list.mount(Label(msg, id="empty-message"))
         else:
             for t in pending:
-                w = TaskWidget(t, all_tags=self.tags, id=f"task-{t.id}")
+                w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=f"task-{t.id}")
                 await task_list.mount(w)
             if completed:
                 await task_list.mount(Static("── Completadas ──", id="completed-separator"))
                 for t in completed:
-                    w = TaskWidget(t, all_tags=self.tags, id=f"task-{t.id}")
+                    w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=f"task-{t.id}")
                     await task_list.mount(w)
         
         self._update_selection(pending, completed)
@@ -2065,7 +2652,6 @@ class TodoApp(App):
                 cb = "☑" if t.done else "☐"
                 txt = t.text[:30] + "..." if len(t.text) > 30 else t.text
                 group_text = f"Grupo: {gname}"
-                # Espacios para alinear
                 padding = " " * max(1, 50 - len(txt) - len(group_text))
                 lines.append(f"  {cb} {txt}{padding}{group_text}")
             if len(tasks) > 3:
@@ -2088,7 +2674,48 @@ class TodoApp(App):
     
     def _get_ordered_tasks(self) -> list:
         c = self._get_current_tasks()
-        return [t for t in c if not t.done] + [t for t in c if t.done]
+        pending = [t for t in c if not t.done]
+        completed = [t for t in c if t.done]
+        
+        alpha_criterion = self.sort_criteria.get("alphabetical")
+        if alpha_criterion == "alpha_asc":
+            pending.sort(key=lambda t: t.text.lower())
+            completed.sort(key=lambda t: t.text.lower())
+        elif alpha_criterion == "alpha_desc":
+            pending.sort(key=lambda t: t.text.lower(), reverse=True)
+            completed.sort(key=lambda t: t.text.lower(), reverse=True)
+        
+        date_criterion = self.sort_criteria.get("date")
+        if date_criterion == "date_asc":
+            pending_with = [t for t in pending if t.due_date]
+            pending_without = [t for t in pending if not t.due_date]
+            pending_with.sort(key=lambda t: t.due_date)
+            pending = pending_with + pending_without
+            
+            completed_with = [t for t in completed if t.due_date]
+            completed_without = [t for t in completed if not t.due_date]
+            completed_with.sort(key=lambda t: t.due_date)
+            completed = completed_with + completed_without
+        elif date_criterion == "date_desc":
+            pending_with = [t for t in pending if t.due_date]
+            pending_without = [t for t in pending if not t.due_date]
+            pending_with.sort(key=lambda t: t.due_date, reverse=True)
+            pending = pending_with + pending_without
+            
+            completed_with = [t for t in completed if t.due_date]
+            completed_without = [t for t in completed if not t.due_date]
+            completed_with.sort(key=lambda t: t.due_date, reverse=True)
+            completed = completed_with + completed_without
+        
+        priority_criterion = self.sort_criteria.get("priority")
+        if priority_criterion == "priority_desc":
+            pending.sort(key=lambda t: t.priority, reverse=True)
+            completed.sort(key=lambda t: t.priority, reverse=True)
+        elif priority_criterion == "priority_asc":
+            pending.sort(key=lambda t: t.priority)
+            completed.sort(key=lambda t: t.priority)
+        
+        return pending + completed
     
     def update_selection(self) -> None:
         ordered = self._get_ordered_tasks()
@@ -2118,16 +2745,43 @@ class TodoApp(App):
             
             text = f"Total: {total} | Completadas: {done} | Pendientes: {total - done} | Grupo: {gname}"
             
-            # Mostrar filtros activos
+            sort_parts = []
+            sort_names = {
+                "alpha_asc": "A→Z",
+                "alpha_desc": "Z→A",
+                "date_asc": "Fecha↑",
+                "date_desc": "Fecha↓",
+                "priority_desc": "Pri↓",
+                "priority_asc": "Pri↑"
+            }
+            
+            if self.sort_criteria.get("priority"):
+                sort_parts.append(sort_names.get(self.sort_criteria["priority"], ""))
+            if self.sort_criteria.get("date"):
+                sort_parts.append(sort_names.get(self.sort_criteria["date"], ""))
+            if self.sort_criteria.get("alphabetical"):
+                sort_parts.append(sort_names.get(self.sort_criteria["alphabetical"], ""))
+            
+            if sort_parts:
+                text += f" | Orden: {' → '.join(sort_parts)}"
+            else:
+                text += " | Orden: Creación"
+            
             filters = []
-            if self.filter_date is not None:
-                if self.filter_date == "none":
-                    filters.append("📅 Sin fecha")
-                else:
-                    try:
-                        d = datetime.strptime(self.filter_date, "%Y-%m-%d")
-                        filters.append(f"📅 {d.day:02d}/{d.month:02d}")
-                    except: pass
+            
+            if self.filter_dates:
+                date_strs = []
+                for fd in self.filter_dates:
+                    if fd == "none":
+                        date_strs.append("Sin fecha")
+                    else:
+                        try:
+                            d = datetime.strptime(fd, "%Y-%m-%d")
+                            date_strs.append(f"{d.day:02d}/{d.month:02d}")
+                        except: pass
+                if date_strs:
+                    filters.append(f"📅 {', '.join(date_strs)}")
+            
             if self.filter_tag_ids:
                 tag_names = []
                 for tag_id in self.filter_tag_ids:
@@ -2136,13 +2790,26 @@ class TodoApp(App):
                         tag_names.append(tag.name)
                 if tag_names:
                     filters.append(f"🏷️ {', '.join(tag_names)}")
-            # NUEVO: Mostrar filtro de estado
-            if self.filter_status == "completed":
-                filters.append("✅ Completadas")
-            elif self.filter_status == "pending":
-                filters.append("⏳ Pendientes")
+            
+            if self.filter_statuses:
+                status_names = []
+                for status in self.filter_statuses:
+                    if status == "completed":
+                        status_names.append("Completadas")
+                    elif status == "pending":
+                        status_names.append("Pendientes")
+                if status_names:
+                    filters.append(f"✅ {', '.join(status_names)}")
+            
+            if self.filter_priorities:
+                priority_names = {0: "Sin prioridad", 1: "⬇ Baja", 2: "■ Media", 3: "⬆ Alta"}
+                priority_strs = [priority_names.get(p, '') for p in self.filter_priorities]
+                if priority_strs:
+                    filters.append(f"⭐ {', '.join(priority_strs)}")
+            
             if filters:
                 text += " | Filtros: " + ", ".join(filters)
+
         self.query_one("#stats", Static).update(text)
     
     def get_selected_widget(self) -> Optional[TaskWidget]:
@@ -2152,11 +2819,9 @@ class TodoApp(App):
         except: return None
     
     def action_quit(self) -> None:
-        """Guardar datos antes de salir"""
         self.save_data()
         self.exit()
     
-    # Navigation
     async def action_nav_left(self) -> None:
         if self.calendar_mode:
             d = date(self.cal_year, self.cal_month, self.cal_day) - timedelta(days=1)
@@ -2228,9 +2893,10 @@ class TodoApp(App):
         idx = (ids.index(self.current_group_id) - 1) % len(ids)
         self.current_group_id = ids[idx]
         self.selected_index = 0
-        self.filter_date = None
+        self.filter_dates = []
         self.filter_tag_ids = []
-        self.filter_status = None
+        self.filter_statuses = []
+        self.filter_priorities = []
         await self.refresh_tabs()
         await self.refresh_view()
         self.update_stats()
@@ -2240,9 +2906,10 @@ class TodoApp(App):
         idx = (ids.index(self.current_group_id) + 1) % len(ids)
         self.current_group_id = ids[idx]
         self.selected_index = 0
-        self.filter_date = None
+        self.filter_dates = []
         self.filter_tag_ids = []
-        self.filter_status = None
+        self.filter_statuses = []
+        self.filter_priorities = []
         await self.refresh_tabs()
         await self.refresh_view()
         self.update_stats()
@@ -2288,7 +2955,6 @@ class TodoApp(App):
             self.update_selection()
         self.call_later(nav)
     
-    # Search
     def action_search(self) -> None:
         def on_input(query: Optional[str]) -> None:
             if not query: return
@@ -2308,7 +2974,6 @@ class TodoApp(App):
                 self.push_screen(SearchResultsScreen(results, query), lambda t: self._go_to_task(t) if t else None)
         self.push_screen(InputModal("🔍 Buscar", placeholder="Buscar tareas..."), on_input)
     
-    # Filter
     def action_filter_tasks(self) -> None:
         if self.calendar_mode: return
         
@@ -2323,15 +2988,39 @@ class TodoApp(App):
         
         async def on_result(result: Optional[dict]) -> None:
             if result is not None:
-                self.filter_date = result.get("date")
+                self.filter_dates = result.get("dates", [])
                 self.filter_tag_ids = result.get("tags", [])
-                self.filter_status = result.get("status")  # NUEVO
+                self.filter_statuses = result.get("statuses", [])
+                self.filter_priorities = result.get("priorities", [])
                 self.selected_index = 0
                 await self.refresh_view()
                 self.update_stats()
-        self.push_screen(FilterModal(self.filter_date, self.filter_tag_ids, self.filter_status, self.tags, available_dates), on_result)
+        
+        self.push_screen(
+            FilterModal(
+                self.filter_dates,
+                self.filter_tag_ids,
+                self.filter_statuses,
+                self.filter_priorities,
+                self.tags,
+                available_dates
+            ),
+            on_result
+        )
     
-    # Groups
+    def action_sort_tasks(self) -> None:
+        if self.calendar_mode:
+            return
+        
+        async def on_result(sort_criteria: Optional[dict[str, Optional[str]]]) -> None:
+            if sort_criteria is not None:
+                self.sort_criteria = sort_criteria
+                self.selected_index = 0
+                await self.refresh_view()
+                self.update_stats()
+        
+        self.push_screen(SortPickerModal(self.sort_criteria), on_result)
+    
     def action_new_group(self) -> None:
         if self.calendar_mode: return
         async def on_result(name: Optional[str]) -> None:
@@ -2380,15 +3069,12 @@ class TodoApp(App):
         self.save_data()
     
     def action_manage_tags(self) -> None:
-        """Gestionar etiquetas globales"""
         async def on_result(updated_tags: list[Tag]) -> None:
             if updated_tags is not None:
-                # Obtener IDs de etiquetas eliminadas
                 old_tag_ids = {t.id for t in self.tags}
                 new_tag_ids = {t.id for t in updated_tags}
                 deleted_tag_ids = old_tag_ids - new_tag_ids
                 
-                # Eliminar etiquetas borradas de todas las tareas
                 if deleted_tag_ids:
                     for task in self.tasks:
                         task.tags = [tid for tid in task.tags if tid not in deleted_tag_ids]
@@ -2400,11 +3086,9 @@ class TodoApp(App):
                 await self.refresh_view()
         self.push_screen(TagsManagerModal(self.tags, self.next_tag_id), on_result)
     
-    # Tasks
     def action_add_task(self) -> None:
         if self.calendar_mode: return
         
-        # Bloquear creación de tareas en General
         if self.current_group_id == self.GENERAL_GROUP_ID:
             self.notify("❌ No se pueden crear tareas en General. Cambia a un grupo específico.", severity="warning", timeout=3)
             return
@@ -2426,7 +3110,6 @@ class TodoApp(App):
         w = self.get_selected_widget()
         if not w: return
         t = w.task_data
-        # Calcular el siguiente ID de comentario
         next_comment_id = 1
         if t.comments:
             next_comment_id = max(c.id for c in t.comments) + 1
@@ -2436,24 +3119,23 @@ class TodoApp(App):
                 t.due_date = result["date"]
                 t.comments = result.get("comments", [])
                 t.tags = result.get("tags", [])
+                t.priority = result.get("priority", 0)
                 old_group_id = t.group_id
                 new_group_id = result.get("group_id")
                 t.group_id = new_group_id
                 self.save_data()
-                # Si cambió de grupo, navegar al nuevo grupo
                 if old_group_id != new_group_id:
                     self.current_group_id = new_group_id
                     self.selected_index = 0
                     await self.refresh_tabs()
                 await self.refresh_view()
                 self.update_stats()
-                # Seleccionar la tarea editada
                 for i, task in enumerate(self._get_ordered_tasks()):
                     if task.id == t.id:
                         self.selected_index = i
                         break
                 self.update_selection()
-        self.push_screen(EditTaskModal(t.text, t.due_date, t.group_id, self.groups, t.comments, next_comment_id, self.tags, t.tags), on_result)
+        self.push_screen(EditTaskModal(t.text, t.due_date, t.group_id, self.groups, t.comments, next_comment_id, self.tags, t.tags, t.priority), on_result)
     
     def action_delete_task(self) -> None:
         if self.calendar_mode: return
@@ -2471,7 +3153,6 @@ class TodoApp(App):
         txt = t.text[:30] + "..." if len(t.text) > 30 else t.text
         self.push_screen(ConfirmModal(f"¿Eliminar '{txt}'?"), on_confirm)
     
-    # Persistence
     def save_data(self) -> None:
         data = {
             "next_task_id": self.next_task_id,
@@ -2480,13 +3161,15 @@ class TodoApp(App):
             "groups": [{"id": g.id, "name": g.name} for g in self.groups],
             "tags": [{"id": t.id, "name": t.name} for t in self.tags],
             "tasks": [{"id": t.id, "text": t.text, "done": t.done, "created_at": t.created_at,
-                       "group_id": t.group_id, "due_date": t.due_date,
-                       "comments": [{"id": c.id, "text": c.text, "created_at": c.created_at} for c in t.comments],
-                       "tags": t.tags} for t in self.tasks]
+                    "group_id": t.group_id, "due_date": t.due_date,
+                    "comments": [{"id": c.id, "text": c.text, "url": c.url, "created_at": c.created_at} for c in t.comments],
+                    "tags": t.tags, "priority": t.priority} for t in self.tasks]
         }
-        try: self.data_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-        except: pass
-    
+        try: 
+            self.data_file.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        except Exception as e:
+            print(f"Error guardando datos: {e}")
+
     def load_data(self) -> None:
         try:
             if self.data_file.exists():
@@ -2498,20 +3181,19 @@ class TodoApp(App):
                 self.tags = [Tag(id=t["id"], name=t["name"]) for t in data.get("tags", [])]
                 self.tasks = []
                 for t in data.get("tasks", []):
-                    comments = [Comment(id=c["id"], text=c["text"], created_at=c.get("created_at", "")) 
-                               for c in t.get("comments", [])]
+                    comments = [Comment(id=c["id"], text=c["text"], url=c.get("url"), created_at=c.get("created_at", ""))
+                            for c in t.get("comments", [])]
                     task = Task(id=t["id"], text=t["text"], done=t.get("done", False),
-                               created_at=t.get("created_at", ""), group_id=t.get("group_id"),
-                               due_date=t.get("due_date"), comments=comments, tags=t.get("tags", []))
+                            created_at=t.get("created_at", ""), group_id=t.get("group_id"),
+                            due_date=t.get("due_date"), comments=comments, tags=t.get("tags", []),
+                            priority=t.get("priority", 0))
                     self.tasks.append(task)
-        except:
+        except Exception as e:
             self.tasks, self.groups, self.tags = [], [], []
             self.next_task_id = self.next_group_id = self.next_tag_id = 1
 
-
 def main():
     TodoApp().run()
-
 
 if __name__ == "__main__":
     main()
