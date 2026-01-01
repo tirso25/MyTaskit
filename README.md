@@ -9,7 +9,7 @@
 
 Una aplicación de gestión de tareas moderna y completa para la terminal, construida con [Textual](https://textual.textualize.io/).
 
-[Características](#-características) • [Instalación](#-instalación) • [Uso](#-uso) • [Atajos de Teclado](#%EF%B8%8F-atajos-de-teclado) • [Capturas](#-capturas-de-pantalla)
+[Características](#-características) • [Instalación](#-instalación) • [Uso](#-uso) • [Atajos de Teclado](#%EF%B8%8F-atajos-de-teclado)
 
 </div>
 
