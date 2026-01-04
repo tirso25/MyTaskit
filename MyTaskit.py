@@ -814,11 +814,13 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
     DEFAULT_CSS = """
     TagsManagerModal { align: center middle; }
     TagsManagerModal > Container {
-        width: 60; height: 28; border: thick $primary;
+        width: 60; height: 30; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     TagsManagerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
-    TagsManagerModal #tags-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    TagsManagerModal .search-label { color: $text-muted; margin-bottom: 0; }
+    TagsManagerModal Input { width: 100%; margin-bottom: 1; }
+    TagsManagerModal #tags-list { width: 100%; height: 12; overflow-y: auto; border: solid $primary-background; padding: 1; }
     TagsManagerModal .tag-item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
@@ -840,6 +842,9 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
         Binding("a", "add_tag", show=False),
         Binding("e", "edit_tag", show=False),
         Binding("d", "delete_tag", show=False),
+        Binding("ctrl+f", "focus_search", show=False),
+        Binding("/", "focus_search", show=False),
+        Binding("tab", "blur_search", show=False),
     ]
     
     def __init__(self, tags: list[Tag], next_tag_id: int, **kwargs) -> None:
@@ -847,12 +852,17 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
         self.tags = [Tag(id=t.id, name=t.name) for t in tags]
         self.next_tag_id = next_tag_id
         self.selected_index = 0 if tags else -1
+        self.search_query = ""
+        self.filtered_tags: list[Tag] = []
+        self.search_focused = False
     
     def compose(self) -> ComposeResult:
         with Container():
             yield Label("🏷️  Gestionar Etiquetas", classes="modal-title")
+            yield Label("🔍 Buscar (/ para activar, Tab para salir):", classes="search-label")
+            yield Input(placeholder="Escribe para buscar etiquetas...", id="search-input")
             yield Container(id="tags-list")
-            yield Label("↑↓ Navegar | a: Añadir | e: Editar | d: Eliminar | Esc: Cerrar", classes="hint")
+            yield Label("↑↓ Navegar | a: Añadir | e: Editar | d: Eliminar | /: Buscar | Tab: Salir búsqueda | Esc: Cerrar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("➕ Añadir", variant="primary", id="add")
                 yield Button("✏️ Editar", variant="default", id="edit")
@@ -860,16 +870,32 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
     
     async def on_mount(self) -> None:
         await self.refresh_tags_list()
+        # No auto-focus en el input
+    
+    def _filter_tags(self) -> list[Tag]:
+        if not self.search_query:
+            return self.tags
+        
+        query_lower = self.search_query.lower()
+        return [tag for tag in self.tags if query_lower in tag.name.lower()]
     
     async def refresh_tags_list(self) -> None:
         tags_list = self.query_one("#tags-list", Container)
         await tags_list.remove_children()
         
+        self.filtered_tags = self._filter_tags()
+        
         if not self.tags:
             await tags_list.mount(Label("No hay etiquetas. Pulsa 'a' para crear una.", classes="empty-msg"))
             self.selected_index = -1
+        elif not self.filtered_tags:
+            await tags_list.mount(Label(f"No se encontraron etiquetas para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
         else:
-            for i, tag in enumerate(self.tags):
+            if self.selected_index >= len(self.filtered_tags):
+                self.selected_index = max(0, len(self.filtered_tags) - 1)
+            
+            for i, tag in enumerate(self.filtered_tags):
                 item = Static(f"  {tag.name}  ", id=f"tag-{i}", classes="tag-item")
                 await tags_list.mount(item)
                 if i == self.selected_index:
@@ -877,14 +903,14 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
             self.scroll_to_selected()
     
     def scroll_to_selected(self) -> None:
-        if self.selected_index >= 0:
+        if self.selected_index >= 0 and self.selected_index < len(self.filtered_tags):
             try:
                 item = self.query_one(f"#tag-{self.selected_index}", Static)
                 item.scroll_visible()
             except: pass
     
     def update_selection(self) -> None:
-        for i in range(len(self.tags)):
+        for i in range(len(self.filtered_tags)):
             try:
                 item = self.query_one(f"#tag-{i}", Static)
                 item.set_class(i == self.selected_index, "selected")
@@ -892,16 +918,35 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
         self.scroll_to_selected()
     
     def action_move_up(self) -> None:
-        if self.tags and self.selected_index > 0:
+        if self.search_focused:
+            return
+        if self.filtered_tags and self.selected_index > 0:
             self.selected_index -= 1
             self.update_selection()
     
     def action_move_down(self) -> None:
-        if self.tags and self.selected_index < len(self.tags) - 1:
+        if self.search_focused:
+            return
+        if self.filtered_tags and self.selected_index < len(self.filtered_tags) - 1:
             self.selected_index += 1
             self.update_selection()
     
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self.query_one("#search-input", Input).focus()
+    
+    def action_blur_search(self) -> None:
+        self.search_focused = False
+        try:
+            self.query_one("#search-input", Input).blur()
+        except:
+            pass
+        self.set_focus(None)
+    
     def action_add_tag(self) -> None:
+        if self.search_focused:
+            return
+        
         def on_result(name: Optional[str]) -> None:
             if name:
                 tag_names = [n.strip() for n in name.split(';') if n.strip()]
@@ -925,7 +970,11 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
                     created_count += 1
                 
                 if created_count > 0:
-                    self.selected_index = len(self.tags) - 1
+                    self.selected_index = 0
+                    self.search_query = ""
+                    try:
+                        self.query_one("#search-input", Input).value = ""
+                    except: pass
                     self.call_later(self.refresh_tags_list)
                     
                     if created_count == 1:
@@ -948,9 +997,12 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
         )
     
     def action_edit_tag(self) -> None:
-        if not self.tags or self.selected_index < 0:
+        if self.search_focused:
             return
-        tag = self.tags[self.selected_index]
+        if not self.filtered_tags or self.selected_index < 0 or self.selected_index >= len(self.filtered_tags):
+            return
+        tag = self.filtered_tags[self.selected_index]
+        
         def on_result(name: Optional[str]) -> None:
             if name:
                 tag.name = name[:30]
@@ -958,13 +1010,16 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
         self.app.push_screen(InputModal("✏️  Editar Etiqueta", initial_text=tag.name), on_result)
     
     def action_delete_tag(self) -> None:
-        if not self.tags or self.selected_index < 0:
+        if self.search_focused:
             return
-        tag = self.tags[self.selected_index]
+        if not self.filtered_tags or self.selected_index < 0 or self.selected_index >= len(self.filtered_tags):
+            return
+        tag = self.filtered_tags[self.selected_index]
+        
         def on_confirm(yes: bool) -> None:
             if yes:
-                self.tags.pop(self.selected_index)
-                if self.selected_index >= len(self.tags) and self.selected_index > 0:
+                self.tags.remove(tag)
+                if self.selected_index >= len(self.filtered_tags) and self.selected_index > 0:
                     self.selected_index -= 1
                 if not self.tags:
                     self.selected_index = -1
@@ -983,9 +1038,18 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
     def on_delete(self) -> None:
         self.action_delete_tag()
     
+    @on(Input.Changed, "#search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_tags_list()
+    
+    @on(Input.Submitted, "#search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+    
     def action_close(self) -> None:
         self.dismiss(self.tags)
-
 
 class TagPickerModal(ModalScreen[list[int]]):
     DEFAULT_CSS = """
