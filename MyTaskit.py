@@ -100,9 +100,15 @@ from tkinter import filedialog
 import shutil
 from rich_pixels import Pixels
 from rich.console import Console
+import subprocess
+import shutil
+import platform
+from pathlib import Path
+from PIL import Image
+import os
+from rich_pixels import Pixels
 
-MESES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-         "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+MESES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 DIAS_SEMANA = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]
 
 @dataclass
@@ -154,11 +160,11 @@ class ImageViewerModal(ModalScreen[bool]):
     DEFAULT_CSS = """
     ImageViewerModal { align: center middle; }
     ImageViewerModal > Container {
-        width: 90%; 
-        height: 90%; 
+        width: 95%; 
+        height: 95%; 
         border: thick $primary;
         background: $surface; 
-        padding: 1 2;
+        padding: 1;
     }
     ImageViewerModal .modal-title { 
         text-align: center; 
@@ -175,6 +181,12 @@ class ImageViewerModal(ModalScreen[bool]):
         align: center middle;
         content-align: center middle;
     }
+    ImageViewerModal .info-text {
+        width: 100%;
+        text-align: center;
+        color: $text-muted;
+        margin-top: 1;
+    }
     ImageViewerModal .button-row { 
         width: 100%; 
         height: auto; 
@@ -187,6 +199,7 @@ class ImageViewerModal(ModalScreen[bool]):
     BINDINGS = [
         Binding("escape", "close", show=False),
         Binding("q", "close", show=False),
+        Binding("o", "open_external", "Abrir externa", show=True),
     ]
     
     def __init__(self, image_path: str, **kwargs) -> None:
@@ -197,20 +210,242 @@ class ImageViewerModal(ModalScreen[bool]):
         with Container():
             yield Label(f"📷 {Path(self.image_path).name}", classes="modal-title")
             yield Static(id="image-container")
+            yield Static("", id="info-text", classes="info-text")
             with Horizontal(classes="button-row"):
+                yield Button("📂 Abrir externa", variant="default", id="open")
                 yield Button("Cerrar", variant="primary", id="close")
     
     def on_mount(self) -> None:
+        image_static = self.query_one("#image-container", Static)
+        info_static = self.query_one("#info-text", Static)
+        
+        term = os.environ.get('TERM', '').lower()
+        term_program = os.environ.get('TERM_PROGRAM', '').lower()
+        
+        if 'kitty' in term or term_program == 'kitty':
+            if self._try_kitty_protocol(image_static):
+                info_static.update("✨ Kitty Protocol (calidad perfecta)")
+                return
+        
+        if term_program == 'iterm.app':
+            if self._try_iterm2_protocol(image_static):
+                info_static.update("✨ iTerm2 Protocol (calidad perfecta)")
+                return
+        
+        if self._terminal_supports_sixel():
+            if self._try_sixel(image_static):
+                info_static.update("✨ Sixel Protocol (alta calidad)")
+                return
+        
+        if self._try_chafa(image_static):
+            info_static.update("✨ Chafa (alta calidad)")
+            return
+        
+        if self._try_rich_pixels(image_static):
+            info_static.update("🎨 Vista previa básica (Presiona 'o' para alta calidad)")
+            return
+        
+        image_static.update(
+            f"📷 {Path(self.image_path).name}\n\n"
+            f"Presiona 'o' o el botón 'Abrir externa'\n"
+            f"para ver la imagen\n\n"
+            f"Ruta: {self.image_path}"
+        )
+        info_static.update("ℹ️ Vista previa no disponible")
+    
+    def _terminal_supports_sixel(self) -> bool:
+        term = os.environ.get('TERM', '').lower()
+        return any(x in term for x in ['mlterm', 'mintty']) or \
+               ('xterm' in term and shutil.which('img2sixel'))
+    
+    def _try_kitty_protocol(self, widget: Static) -> bool:
         try:
-            pixels = Pixels.from_image_path(
-                self.image_path, 
-                resize=(80, 40)
+            from base64 import b64encode
+            
+            img = Image.open(self.image_path)
+            max_size = (800, 600)
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+            
+            import io
+            buffer = io.BytesIO()
+            img.save(buffer, format='PNG')
+            img_data = buffer.getvalue()
+            
+            b64_data = b64encode(img_data).decode('ascii')
+            kitty_cmd = f"\033_Ga=T,f=100;{b64_data}\033\\"
+            
+            from rich.text import Text
+            widget.update(Text.from_ansi(kitty_cmd))
+            return True
+            
+        except Exception:
+            return False
+    
+    def _try_iterm2_protocol(self, widget: Static) -> bool:
+        try:
+            from base64 import b64encode
+            
+            with open(self.image_path, 'rb') as f:
+                img_data = f.read()
+            
+            b64_data = b64encode(img_data).decode('ascii')
+            iterm_cmd = f"\033]1337;File=inline=1:{b64_data}\007"
+            
+            from rich.text import Text
+            widget.update(Text.from_ansi(iterm_cmd))
+            return True
+            
+        except Exception:
+            return False
+    
+    def _try_sixel(self, widget: Static) -> bool:
+        if not shutil.which('img2sixel'):
+            return False
+        
+        try:
+            terminal_size = shutil.get_terminal_size()
+            width = min(800, (terminal_size.columns - 10) * 8)
+            
+            result = subprocess.run(
+                ['img2sixel', '-w', str(width), self.image_path],
+                capture_output=True,
+                timeout=10
             )
-            image_static = self.query_one("#image-container", Static)
-            image_static.update(pixels)
+            
+            if result.returncode == 0:
+                from rich.text import Text
+                widget.update(Text.from_ansi(result.stdout.decode('utf-8', errors='ignore')))
+                return True
+                
+        except Exception:
+            pass
+        
+        return False
+    
+    def _try_chafa(self, widget: Static) -> bool:
+        if not shutil.which('chafa'):
+            return False
+        
+        try:
+            terminal_size = shutil.get_terminal_size()
+            width = min(100, terminal_size.columns - 10)
+            height = min(50, terminal_size.lines - 15)
+            
+            result = subprocess.run(
+                [
+                    'chafa',
+                    '--size', f'{width}x{height}',
+                    '--format', 'symbols',
+                    '--symbols', 'all',
+                    '--color-space', 'rgb',
+                    '--dither', 'none',
+                    '--optimize', '9',
+                    self.image_path
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                encoding='utf-8'
+            )
+            
+            if result.returncode == 0 and result.stdout:
+                from rich.text import Text
+                widget.update(Text.from_ansi(result.stdout))
+                return True
+        except Exception:
+            pass
+        
+        return False
+    
+    def _try_rich_pixels(self, widget: Static) -> bool:
+        try:
+            terminal_size = shutil.get_terminal_size()
+
+            target_width = min(60, terminal_size.columns - 20)
+            target_height = min(30, terminal_size.lines - 10)
+            
+            pixels = Pixels.from_image_path(
+                self.image_path,
+                resize=(target_width, target_height)
+            )
+            
+            widget.update(pixels)
+            return True
+            
         except Exception as e:
-            self.query_one("#image-container", Static).update(
-                f"❌ Error al cargar imagen: {str(e)}"
+            return False
+    
+    def action_open_external(self) -> None:
+        self._open_external()
+    
+    @on(Button.Pressed, "#open")
+    def on_open_btn(self) -> None:
+        self._open_external()
+    
+    def _open_external(self) -> None:
+        system = platform.system()
+        
+        try:
+            if system == 'Windows':
+                subprocess.Popen(['start', '', self.image_path], shell=True)
+                self.app.notify("📂 Abriendo imagen...", severity="information")
+                
+            elif system == 'Darwin':
+                try:
+                    subprocess.Popen(['open', self.image_path], 
+                                   stderr=subprocess.PIPE)
+                    self.app.notify("📂 Abriendo imagen...", severity="information")
+                except:
+                    self._open_with_ranger()
+                
+            elif system == 'Linux':
+                if self._try_gui_viewer():
+                    self.app.notify("📂 Abriendo imagen...", severity="information")
+                else:
+                    self._open_with_ranger()
+            
+        except Exception as e:
+            self.app.notify(f"❌ Error: {str(e)}", severity="error")
+            self._open_with_ranger()
+    
+    def _try_gui_viewer(self) -> bool:
+        viewers = ['xdg-open', 'eog', 'feh', 'gwenview', 'display', 'gthumb', 'ristretto']
+        
+        for viewer in viewers:
+            if shutil.which(viewer):
+                try:
+                    subprocess.Popen(
+                        [viewer, self.image_path],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                    return True
+                except:
+                    continue
+        
+        return False
+    
+    def _open_with_ranger(self) -> None:
+        if shutil.which('ranger'):
+            try:
+                self.app.notify("📁 Abriendo con Ranger...", severity="information")
+                
+                self.app.exit()
+                
+                subprocess.run(['ranger', '--selectfile', self.image_path])
+                
+            except Exception as e:
+                print(f"Error al abrir Ranger: {e}")
+        else:
+            self.app.notify(
+                "⚠️ No hay visor gráfico ni Ranger disponible",
+                severity="warning",
+                timeout=3
+            )
+            self.app.notify(
+                f"📁 Ruta: {self.image_path}",
+                severity="information",
+                timeout=10
             )
     
     @on(Button.Pressed, "#close")
@@ -219,7 +454,7 @@ class ImageViewerModal(ModalScreen[bool]):
     
     def action_close(self) -> None:
         self.dismiss(True)
-
+        
 class TaskWidget(Static):
     DEFAULT_CSS = """
     TaskWidget {
