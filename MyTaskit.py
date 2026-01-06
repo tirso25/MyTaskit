@@ -93,23 +93,29 @@ from pathlib import Path
 from datetime import datetime, date, timedelta
 import calendar
 import webbrowser
+import pyperclip 
+from PIL import Image 
+import tkinter as tk
+from tkinter import filedialog
+import shutil
+from rich_pixels import Pixels
+from rich.console import Console
 
 MESES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
          "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 DIAS_SEMANA = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]
-
 
 @dataclass
 class Comment:
     id: int
     text: str
     url: Optional[str] = None
+    image_path: Optional[str] = None
     created_at: str = ""
     
     def __post_init__(self):
         if not self.created_at:
             self.created_at = datetime.now().strftime("%d/%m %H:%M")
-
 
 @dataclass
 class Tag:
@@ -118,7 +124,6 @@ class Tag:
     
     def __post_init__(self):
         self.name = self.name[:30]
-
 
 @dataclass
 class Task:
@@ -140,12 +145,80 @@ class Task:
         if self.tags is None:
             self.tags = []
 
-
 @dataclass
 class Group:
     id: int
     name: str
 
+class ImageViewerModal(ModalScreen[bool]):
+    DEFAULT_CSS = """
+    ImageViewerModal { align: center middle; }
+    ImageViewerModal > Container {
+        width: 90%; 
+        height: 90%; 
+        border: thick $primary;
+        background: $surface; 
+        padding: 1 2;
+    }
+    ImageViewerModal .modal-title { 
+        text-align: center; 
+        text-style: bold; 
+        width: 100%; 
+        margin-bottom: 1; 
+    }
+    ImageViewerModal #image-container { 
+        width: 100%; 
+        height: 1fr; 
+        overflow: auto;
+        border: solid $primary-background;
+        padding: 1;
+        align: center middle;
+        content-align: center middle;
+    }
+    ImageViewerModal .button-row { 
+        width: 100%; 
+        height: auto; 
+        align: center middle; 
+        margin-top: 1;
+    }
+    ImageViewerModal Button { margin: 0 1; }
+    """
+    
+    BINDINGS = [
+        Binding("escape", "close", show=False),
+        Binding("q", "close", show=False),
+    ]
+    
+    def __init__(self, image_path: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.image_path = image_path
+    
+    def compose(self) -> ComposeResult:
+        with Container():
+            yield Label(f"📷 {Path(self.image_path).name}", classes="modal-title")
+            yield Static(id="image-container")
+            with Horizontal(classes="button-row"):
+                yield Button("Cerrar", variant="primary", id="close")
+    
+    def on_mount(self) -> None:
+        try:
+            pixels = Pixels.from_image_path(
+                self.image_path, 
+                resize=(80, 40)
+            )
+            image_static = self.query_one("#image-container", Static)
+            image_static.update(pixels)
+        except Exception as e:
+            self.query_one("#image-container", Static).update(
+                f"❌ Error al cargar imagen: {str(e)}"
+            )
+    
+    @on(Button.Pressed, "#close")
+    def on_close_btn(self) -> None:
+        self.dismiss(True)
+    
+    def action_close(self) -> None:
+        self.dismiss(True)
 
 class TaskWidget(Static):
     DEFAULT_CSS = """
@@ -172,8 +245,9 @@ class TaskWidget(Static):
     }
     TaskWidget .task-text { width: 1fr; height: 1; }
     TaskWidget .tag { background: #90EE90; color: #000000; }
-        TaskWidget .tag-separator { width: 1; }
+    TaskWidget .tag-separator { width: 1; }
     TaskWidget .task-links { width: 3; height: 1; text-align: right; color: $accent; }
+    TaskWidget .task-images { width: 3; height: 1; text-align: right; color: $primary; }
     TaskWidget .task-comments { width: 5; height: 1; text-align: right; color: $primary; }
     TaskWidget .task-group { width: 20; height: 1; text-align: right; color: $text-muted; }
     TaskWidget .task-date { width: 8; height: 1; text-align: right; color: $warning; }
@@ -183,6 +257,7 @@ class TaskWidget(Static):
     TaskWidget.done .task-date { color: $text-muted; }
     TaskWidget.done .task-comments { color: $text-muted; }
     TaskWidget.done .task-links { color: $text-muted; }
+    TaskWidget.done .task-images { color: $text-muted; }
     TaskWidget.done .task-group { color: $text-muted; }
     TaskWidget.done .priority { color: $text-muted; }
     """
@@ -229,6 +304,10 @@ class TaskWidget(Static):
         links_count = sum(1 for c in self.task_data.comments if c.url)
         links_str = f"🔗{links_count}" if links_count > 0 else ""
         yield Label(links_str, classes="task-links")
+        
+        images_count = sum(1 for c in self.task_data.comments if c.image_path)
+        images_str = f"📷{images_count}" if images_count > 0 else ""
+        yield Label(images_str, classes="task-images")
         
         comments_str = f"💬{len(self.task_data.comments)}" if self.task_data.comments else ""
         yield Label(comments_str, classes="task-comments")
@@ -581,22 +660,41 @@ class CommentEditModal(ModalScreen[Optional[dict]]):
     DEFAULT_CSS = """
     CommentEditModal { align: center middle; }
     CommentEditModal > Container {
-        width: 70; height: auto; border: thick $primary;
+        width: 78; height: 30; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     CommentEditModal .modal-title { text-align: center; text-style: bold; width: 100%; margin-bottom: 1; }
     CommentEditModal .section-label { margin-top: 1; margin-bottom: 0; color: $text-muted; }
     CommentEditModal Input { width: 100%; margin-bottom: 1; }
+    CommentEditModal .image-info { 
+        width: 100%; 
+        padding: 1; 
+        background: $surface-lighten-1;
+        border: solid $primary-background;
+        margin-bottom: 1;
+        color: $success;
+    }
     CommentEditModal .button-row { width: 100%; height: auto; align: center middle; margin-top: 1; }
+    CommentEditModal .image-button-row { 
+        width: 100%; 
+        height: auto; 
+        align: left middle; 
+        margin-bottom: 1;
+        layout: horizontal;
+    }
     CommentEditModal Button { margin: 0 1; }
     """
     BINDINGS = [Binding("escape", "cancel", show=False)]
     
-    def __init__(self, title: str = "💬 Comentario", initial_text: str = "", initial_url: str = "", **kwargs) -> None:
+    def __init__(self, title: str = "💬 Comentario", initial_text: str = "", 
+                 initial_url: str = "", initial_image: str = "", **kwargs) -> None:
         super().__init__(**kwargs)
         self.title_text = title
         self.initial_text = initial_text
         self.initial_url = initial_url or ""
+        self.current_image_path = initial_image or ""
+        self.images_dir = Path.home() / "todo" / "images"
+        self.images_dir.mkdir(exist_ok=True, parents=True)
     
     def compose(self) -> ComposeResult:
         with Container():
@@ -604,13 +702,145 @@ class CommentEditModal(ModalScreen[Optional[dict]]):
             yield Label("Texto del comentario:", classes="section-label")
             yield Input(value=self.initial_text, placeholder="Escribe el comentario...", id="text-input")
             yield Label("Enlace (opcional):", classes="section-label")
-            yield Input(value=self.initial_url, placeholder="https://ejemplo.com o https://youtube.com/watch?v=...", id="url-input")
+            yield Input(value=self.initial_url, placeholder="https://ejemplo.com", id="url-input")
+            yield Label("Imagen (opcional):", classes="section-label")
+            yield Horizontal(id="image-button-row", classes="image-button-row")
+            yield Container(id="image-info-container")
             with Horizontal(classes="button-row"):
                 yield Button("Guardar", variant="primary", id="save")
                 yield Button("Cancelar", variant="default", id="cancel")
     
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self.query_one("#text-input", Input).focus()
+        await self._update_image_buttons()
+    
+    async def _update_image_buttons(self) -> None:
+        """Actualiza los botones de imagen según si hay imagen o no"""
+        button_row = self.query_one("#image-button-row", Horizontal)
+        await button_row.remove_children()
+        
+        await button_row.mount(Button("📋 Pegar", variant="default", id="paste-image"))
+        await button_row.mount(Button("📁 Examinar", variant="default", id="browse-image"))
+        await button_row.mount(Button("✏️ Ruta", variant="default", id="path-image"))
+        
+        if self.current_image_path:
+            await button_row.mount(Button("🗑️ Eliminar", variant="error", id="remove-image"))
+        
+        info_container = self.query_one("#image-info-container", Container)
+        await info_container.remove_children()
+        
+        if self.current_image_path:
+            await info_container.mount(
+                Label(f"📷 Imagen: {Path(self.current_image_path).name}", 
+                      id="image-info", classes="image-info")
+            )
+    
+    def _save_image_from_clipboard(self) -> Optional[str]:
+        """Intenta guardar una imagen desde el portapapeles"""
+        try:
+            from PIL import ImageGrab
+            image = ImageGrab.grabclipboard()
+            if image and isinstance(image, Image.Image):
+                filename = f"img_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                filepath = self.images_dir / filename
+                image.save(filepath)
+                return str(filepath)
+            else:
+                try:
+                    clipboard_text = pyperclip.paste()
+                    if clipboard_text and Path(clipboard_text).exists():
+                        if Path(clipboard_text).suffix.lower() in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+                            return self._copy_image_to_storage(clipboard_text)
+                except:
+                    pass
+            return None
+        except Exception as e:
+            print(f"Error al pegar imagen: {e}")
+            return None
+    
+    def _copy_image_to_storage(self, source_path: str) -> Optional[str]:
+        """Copia una imagen al directorio de almacenamiento"""
+        try:
+            source = Path(source_path)
+            if not source.exists():
+                return None
+            
+            if source.suffix.lower() not in ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']:
+                return None
+            
+            filename = f"img_{datetime.now().strftime('%Y%m%d_%H%M%S')}{source.suffix}"
+            filepath = self.images_dir / filename
+            shutil.copy2(source, filepath)
+            return str(filepath)
+        except Exception as e:
+            print(f"Error al copiar imagen: {e}")
+            return None
+    
+    def _browse_image(self) -> Optional[str]:
+        """Abre el explorador de archivos para seleccionar una imagen"""
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            
+            filepath = filedialog.askopenfilename(
+                title="Seleccionar imagen",
+                filetypes=[
+                    ("Imágenes", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"),
+                    ("Todos los archivos", "*.*")
+                ]
+            )
+            root.destroy()
+            
+            if filepath:
+                return self._copy_image_to_storage(filepath)
+            return None
+        except Exception as e:
+            print(f"Error al abrir explorador: {e}")
+            return None
+    
+    @on(Button.Pressed, "#paste-image")
+    async def on_paste_image(self) -> None:
+        image_path = self._save_image_from_clipboard()
+        if image_path:
+            self.current_image_path = image_path
+            await self._update_image_buttons()
+            self.app.notify("📷 Imagen pegada correctamente", severity="information")
+        else:
+            self.app.notify("⚠️ No hay imagen en el portapapeles", severity="warning")
+    
+    @on(Button.Pressed, "#browse-image")
+    async def on_browse_image(self) -> None:
+        image_path = self._browse_image()
+        if image_path:
+            self.current_image_path = image_path
+            await self._update_image_buttons()
+            self.app.notify("📷 Imagen seleccionada", severity="information")
+    
+    @on(Button.Pressed, "#path-image")
+    def on_path_image(self) -> None:
+        async def on_result(path: Optional[str]) -> None:
+            if path:
+                if Path(path).exists():
+                    image_path = self._copy_image_to_storage(path)
+                    if image_path:
+                        self.current_image_path = image_path
+                        await self._update_image_buttons()
+                        self.app.notify("📷 Imagen añadida", severity="information")
+                    else:
+                        self.app.notify("❌ Formato de imagen no válido", severity="error")
+                else:
+                    self.app.notify("❌ Ruta no existe", severity="error")
+        self.app.push_screen(
+            InputModal("📷 Ruta de la imagen", placeholder="/ruta/a/imagen.png"),
+            on_result
+        )
+    
+    @on(Button.Pressed, "#remove-image")
+    async def on_remove_image(self) -> None:
+        self.current_image_path = ""
+        await self._update_image_buttons()
+        self.app.notify("🗑️ Imagen eliminada", severity="information")
     
     @on(Button.Pressed, "#save")
     def on_save(self) -> None:
@@ -627,7 +857,8 @@ class CommentEditModal(ModalScreen[Optional[dict]]):
         
         self.dismiss({
             "text": text,
-            "url": url if url else None
+            "url": url if url else None,
+            "image_path": self.current_image_path if self.current_image_path else None
         })
     
     @on(Button.Pressed, "#cancel")
@@ -646,11 +877,11 @@ class CommentsModal(ModalScreen[list[Comment]]):
     DEFAULT_CSS = """
     CommentsModal { align: center middle; }
     CommentsModal > Container {
-        width: 70; height: 22; border: thick $primary;
+        width: 80; height: 26; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     CommentsModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
-    CommentsModal #comments-list { width: 100%; height: 10; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    CommentsModal #comments-list { width: 100%; height: 12; overflow-y: auto; border: solid $primary-background; padding: 1; }
     CommentsModal .comment-item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
@@ -673,11 +904,14 @@ class CommentsModal(ModalScreen[list[Comment]]):
         Binding("d", "delete_comment", show=False),
         Binding("ctrl+o", "open_link", show=False),
         Binding("enter", "open_link", show=False),
+        Binding("v", "view_image", show=False),
     ]
     
     def __init__(self, comments: list[Comment], next_comment_id: int, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.comments = [Comment(id=c.id, text=c.text, url=c.url, created_at=c.created_at) for c in comments]
+        self.comments = [Comment(id=c.id, text=c.text, url=c.url, 
+                                image_path=c.image_path, created_at=c.created_at) 
+                        for c in comments]
         self.next_comment_id = next_comment_id
         self.selected_index = 0 if comments else -1
     
@@ -685,7 +919,7 @@ class CommentsModal(ModalScreen[list[Comment]]):
         with Container():
             yield Label("💬 Comentarios", classes="modal-title")
             yield Container(id="comments-list")
-            yield Label("↑↓ Navegar | a: Añadir | e: Editar | d: Eliminar | Enter: Abrir enlace | Esc: Cerrar", classes="hint")
+            yield Label("↑↓ Navegar | a: Añadir | e: Editar | d: Eliminar | Enter: Abrir enlace | v: Ver imagen | Esc: Cerrar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("➕ Añadir", variant="primary", id="add")
                 yield Button("✏️ Editar", variant="default", id="edit")
@@ -703,10 +937,11 @@ class CommentsModal(ModalScreen[list[Comment]]):
             self.selected_index = -1
         else:
             for i, comment in enumerate(self.comments):
-                text = comment.text[:40] + "..." if len(comment.text) > 40 else comment.text
+                text = comment.text[:35] + "..." if len(comment.text) > 35 else comment.text
                 
                 link_icon = " 🔗" if comment.url else ""
-                display_text = f"{text}{link_icon}  [{comment.created_at}]"
+                image_icon = " 📷" if comment.image_path else ""
+                display_text = f"{text}{link_icon}{image_icon}  [{comment.created_at}]"
                 
                 item = Static(display_text, id=f"comment-{i}", classes="comment-item")
                 await comments_list.mount(item)
@@ -745,7 +980,8 @@ class CommentsModal(ModalScreen[list[Comment]]):
                 comment = Comment(
                     id=self.next_comment_id, 
                     text=result["text"],
-                    url=result.get("url")
+                    url=result.get("url"),
+                    image_path=result.get("image_path")
                 )
                 self.next_comment_id += 1
                 self.comments.append(comment)
@@ -761,9 +997,11 @@ class CommentsModal(ModalScreen[list[Comment]]):
             if result and result.get("text"):
                 comment.text = result["text"]
                 comment.url = result.get("url")
+                comment.image_path = result.get("image_path")
                 self.call_later(self.refresh_comments_list)
         self.app.push_screen(
-            CommentEditModal("✏️ Editar Comentario", initial_text=comment.text, initial_url=comment.url),
+            CommentEditModal("✏️ Editar Comentario", initial_text=comment.text, 
+                           initial_url=comment.url, initial_image=comment.image_path),
             on_result
         )
     
@@ -774,6 +1012,12 @@ class CommentsModal(ModalScreen[list[Comment]]):
         txt = comment.text[:30] + "..." if len(comment.text) > 30 else comment.text
         def on_confirm(yes: bool) -> None:
             if yes:
+                if comment.image_path and Path(comment.image_path).exists():
+                    try:
+                        Path(comment.image_path).unlink()
+                    except:
+                        pass
+                
                 self.comments.pop(self.selected_index)
                 if self.selected_index >= len(self.comments) and self.selected_index > 0:
                     self.selected_index -= 1
@@ -794,6 +1038,18 @@ class CommentsModal(ModalScreen[list[Comment]]):
                 self.app.notify(f"Error al abrir enlace: {str(e)}", severity="error")
         else:
             self.app.notify("Este comentario no tiene enlace", severity="warning")
+    
+    def action_view_image(self) -> None:
+        if not self.comments or self.selected_index < 0:
+            return
+        comment = self.comments[self.selected_index]
+        if comment.image_path:
+            if Path(comment.image_path).exists():
+                self.app.push_screen(ImageViewerModal(comment.image_path))
+            else:
+                self.app.notify("❌ Imagen no encontrada", severity="error")
+        else:
+            self.app.notify("Este comentario no tiene imagen", severity="warning")
     
     @on(Button.Pressed, "#add")
     def on_add(self) -> None:
@@ -870,7 +1126,6 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
     
     async def on_mount(self) -> None:
         await self.refresh_tags_list()
-        # No auto-focus en el input
     
     def _filter_tags(self) -> list[Tag]:
         if not self.search_query:
@@ -1109,7 +1364,6 @@ class TagPickerModal(ModalScreen[list[int]]):
     
     async def on_mount(self) -> None:
         await self.refresh_tags_list()
-        # No auto-focus en el input
     
     def _filter_tags(self) -> list[Tag]:
         if not self.search_query:
@@ -2040,7 +2294,6 @@ class DatePickerModal(ModalScreen[Optional[str]]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
-
 class ConfirmModal(ModalScreen[bool]):
     DEFAULT_CSS = """
     ConfirmModal { align: center middle; }
@@ -2105,7 +2358,6 @@ class ConfirmModal(ModalScreen[bool]):
     
     def action_cancel(self) -> None:
         self.dismiss(False)
-
 
 class GroupOptionsModal(ModalScreen[str]):
     DEFAULT_CSS = """
@@ -2177,7 +2429,6 @@ class GroupOptionsModal(ModalScreen[str]):
     
     def action_cancel(self) -> None:
         self.dismiss("")
-
 
 class DayTasksModal(ModalScreen[Optional[Task]]):
     DEFAULT_CSS = """
@@ -2262,7 +2513,6 @@ class DayTasksModal(ModalScreen[Optional[Task]]):
     
     def action_cancel(self) -> None:
         self.dismiss(None)
-
 
 class SearchResultsScreen(ModalScreen[Optional[Task]]):
     DEFAULT_CSS = """
@@ -3571,7 +3821,8 @@ class TodoApp(App):
                 "created_at": t.created_at,
                 "group_id": t.group_id,
                 "due_date": t.due_date,
-                "comments": [{"id": c.id, "text": c.text, "url": c.url, "created_at": c.created_at} 
+                "comments": [{"id": c.id, "text": c.text, "url": c.url, 
+                            "image_path": c.image_path, "created_at": c.created_at}
                             for c in t.comments],
                 "tags": list(t.tags),
                 "priority": t.priority
@@ -3600,7 +3851,10 @@ class TodoApp(App):
         
         self.tasks = []
         for t in state["tasks"]:
-            comments = [Comment(id=c["id"], text=c["text"], url=c.get("url"), created_at=c.get("created_at", "")) for c in t["comments"]]
+            comments = [Comment(id=c["id"], text=c["text"], url=c.get("url"), 
+                            image_path=c.get("image_path"),
+                            created_at=c.get("created_at", "")) 
+                    for c in t["comments"]]
             task = Task(
                 id=t["id"],
                 text=t["text"],
@@ -3666,7 +3920,9 @@ class TodoApp(App):
                 "tags": [{"id": t.id, "name": t.name} for t in self.tags],
                 "tasks": [{"id": t.id, "text": t.text, "done": t.done, "created_at": t.created_at,
                         "group_id": t.group_id, "due_date": t.due_date,
-                        "comments": [{"id": c.id, "text": c.text, "url": c.url, "created_at": c.created_at} for c in t.comments],
+                        "comments": [{"id": c.id, "text": c.text, "url": c.url, 
+                                    "image_path": c.image_path, "created_at": c.created_at} 
+                                    for c in t.comments],
                         "tags": t.tags, "priority": t.priority} for t in self.tasks]
             }
         try: 
@@ -3686,7 +3942,9 @@ class TodoApp(App):
                 self.tags = [Tag(id=t["id"], name=t["name"]) for t in data.get("tags", [])]
                 self.tasks = []
                 for t in data.get("tasks", []):
-                    comments = [Comment(id=c["id"], text=c["text"], url=c.get("url"), created_at=c.get("created_at", ""))
+                    comments = [Comment(id=c["id"], text=c["text"], url=c.get("url"), 
+                                    image_path=c.get("image_path"),
+                                    created_at=c.get("created_at", ""))
                             for c in t.get("comments", [])]
                     task = Task(id=t["id"], text=t["text"], done=t.get("done", False),
                             created_at=t.get("created_at", ""), group_id=t.get("group_id"),
