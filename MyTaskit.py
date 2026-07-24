@@ -7,7 +7,7 @@ from textual.widgets import Button, Footer, Header, Input, Label, Static
 from textual.binding import Binding
 from textual import on, work
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Any
 from threading import Lock
 import json
 from pathlib import Path
@@ -263,9 +263,12 @@ class Subtask:
 class Tag:
     id: int
     name: str
+    created_at: str = ""
 
     def __post_init__(self):
         self.name = self.name[:30]
+        if not self.created_at:
+            self.created_at = datetime.now().strftime("%d/%m/%Y %H:%M")
 
 @dataclass
 class Note:
@@ -280,7 +283,7 @@ class Note:
 
     def __post_init__(self):
         if not self.created_at:
-            self.created_at = datetime.now().isoformat()
+            self.created_at = datetime.now().strftime("%d/%m/%Y %H:%M")
         if self.tags is None:
             self.tags = []
 
@@ -296,7 +299,7 @@ class VoiceNote:
 
     def __post_init__(self):
         if not self.created_at:
-            self.created_at = datetime.now().isoformat()
+            self.created_at = datetime.now().strftime("%d/%m/%Y %H:%M")
         if self.tags is None:
             self.tags = []
 
@@ -559,7 +562,7 @@ class Canvas:
 
     def __post_init__(self):
         if not self.created_at:
-            self.created_at = datetime.now().isoformat()
+            self.created_at = datetime.now().strftime("%d/%m/%Y %H:%M")
         if self.grid is None:
             self.grid = [[" " for _ in range(self.width)] for _ in range(self.height)]
         if self.tags is None:
@@ -583,7 +586,7 @@ class Task:
     
     def __post_init__(self):
         if not self.created_at:
-            self.created_at = datetime.now().strftime("%d/%m %H:%M")
+            self.created_at = datetime.now().strftime("%d/%m/%Y %H:%M")
         if self.comments is None:
             self.comments = []
         if self.tags is None:
@@ -1920,7 +1923,7 @@ class TaskWidget(Static):
     TaskWidget .task-audios { width: 5; height: 1; text-align: right; color: $success; }
     TaskWidget .task-group { width: 20; height: 1; text-align: right; color: $text-muted; }
     TaskWidget .task-date { width: 8; height: 1; text-align: right; color: $warning; }
-    TaskWidget .task-time { width: 12; height: 1; text-align: right; color: $text-muted; }
+    TaskWidget .task-time { width: 17; height: 1; text-align: right; color: $text-muted; }
     TaskWidget.done .task-text { text-style: strike; color: $text-muted; }
     TaskWidget.done .checkbox { color: $success; }
     TaskWidget.done .task-date { color: $text-muted; }
@@ -2017,7 +2020,7 @@ class TaskWidget(Static):
                 date_str = f"📅 {d.day:02d}/{d.month:02d}"
             except: pass
         yield Label(date_str, classes="task-date")
-        yield Label(self.task_data.created_at, classes="task-time")
+        yield Label(format_datetime_display(self.task_data.created_at), classes="task-time")
     
     def _format_group_name(self) -> str:
         if self.task_data.group_id is None:
@@ -2047,6 +2050,35 @@ class TaskWidget(Static):
         if self.task_data.done:
             self.add_class("done")
 
+    def on_click(self) -> None:
+        if self.app and hasattr(self.app, "_select_task_by_data"):
+            self.app._select_task_by_data(self.task_data)
+
+def format_datetime_display(dt_str: str) -> str:
+    if not dt_str:
+        return ""
+    try:
+        dt = datetime.fromisoformat(dt_str)
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except (ValueError, TypeError):
+        pass
+
+    try:
+        dt = datetime.strptime(dt_str, "%d/%m/%Y %H:%M")
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except (ValueError, TypeError):
+        pass
+
+    try:
+        dt = datetime.strptime(dt_str, "%d/%m %H:%M")
+        dt = dt.replace(year=datetime.now().year)
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except (ValueError, TypeError):
+        pass
+
+    return dt_str
+
+
 class NoteWidget(Static):
     DEFAULT_CSS = """
     NoteWidget {
@@ -2069,7 +2101,7 @@ class NoteWidget(Static):
     NoteWidget .note-link { width: 4; height: 1; text-align: right; color: $accent; }
     NoteWidget .note-image { width: 4; height: 1; text-align: right; color: $primary; }
     NoteWidget .note-file { width: 4; height: 1; text-align: right; color: $warning; }
-    NoteWidget .note-time { width: 12; height: 1; text-align: right; color: $text-muted; }
+    NoteWidget .note-time { width: 17; height: 1; text-align: right; color: $text-muted; }
     """
 
     def __init__(self, note_data: Note, all_tags: list[Tag] = None, **kwargs) -> None:
@@ -2099,7 +2131,7 @@ class NoteWidget(Static):
         file_str = "📎" if self.note_data.file_path else ""
         yield Label(file_str, classes="note-file")
 
-        yield Label(self.note_data.created_at, classes="note-time")
+        yield Label(format_datetime_display(self.note_data.created_at), classes="note-time")
 
     @property
     def selected(self) -> bool:
@@ -2109,6 +2141,10 @@ class NoteWidget(Static):
     def selected(self, value: bool) -> None:
         self._selected = value
         self.set_class(value, "selected")
+
+    def on_click(self) -> None:
+        if self.app and hasattr(self.app, "_select_note_by_data"):
+            self.app._select_note_by_data(self.note_data)
 
 class VoiceNoteWidget(Static):
     DEFAULT_CSS = """
@@ -2160,7 +2196,7 @@ class VoiceNoteWidget(Static):
         audio_str = "🔊" if self.voice_note_data.audio_path else ""
         yield Label(audio_str, classes="vn-audio")
 
-        yield Label(self.voice_note_data.created_at, classes="vn-time")
+        yield Label(format_datetime_display(self.voice_note_data.created_at), classes="vn-time")
 
     @property
     def selected(self) -> bool:
@@ -2170,6 +2206,10 @@ class VoiceNoteWidget(Static):
     def selected(self, value: bool) -> None:
         self._selected = value
         self.set_class(value, "selected")
+
+    def on_click(self) -> None:
+        if self.app and hasattr(self.app, "_select_voice_note_by_data"):
+            self.app._select_voice_note_by_data(self.voice_note_data)
 
 class CanvasWidget(Static):
     DEFAULT_CSS = """
@@ -2188,23 +2228,34 @@ class CanvasWidget(Static):
     }
     CanvasWidget .canvas-icon { width: 4; height: 1; }
     CanvasWidget .canvas-title { width: 1fr; height: 1; }
+    CanvasWidget .tag { background: #90EE90; color: #000000; }
+    CanvasWidget .tag-separator { width: 1; }
     CanvasWidget .canvas-size { width: 12; height: 1; text-align: right; color: $text-muted; }
-    CanvasWidget .canvas-time { width: 12; height: 1; text-align: right; color: $text-muted; }
+    CanvasWidget .canvas-time { width: 17; height: 1; text-align: right; color: $text-muted; }
     """
 
-    def __init__(self, canvas_data: Canvas, **kwargs) -> None:
+    def __init__(self, canvas_data: Canvas, all_tags: list[Tag] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.canvas_data = canvas_data
+        self.all_tags = all_tags or []
         self._selected = False
 
     def compose(self) -> ComposeResult:
         yield Label("🎨", classes="canvas-icon")
         yield Label(self.canvas_data.title, classes="canvas-title")
 
+        if self.canvas_data.tags:
+            for tag_id in self.canvas_data.tags:
+                tag = next((t for t in self.all_tags if t.id == tag_id), None)
+                if tag:
+                    tag_name = tag.name[:10] if len(tag.name) > 10 else tag.name
+                    yield Label(f" {tag_name} ", classes="tag")
+                    yield Label(" ", classes="tag-separator")
+
         size_str = f"{self.canvas_data.width}x{self.canvas_data.height}"
         yield Label(size_str, classes="canvas-size")
 
-        yield Label(self.canvas_data.created_at, classes="canvas-time")
+        yield Label(format_datetime_display(self.canvas_data.created_at), classes="canvas-time")
 
     @property
     def selected(self) -> bool:
@@ -2214,6 +2265,61 @@ class CanvasWidget(Static):
     def selected(self, value: bool) -> None:
         self._selected = value
         self.set_class(value, "selected")
+
+    def on_click(self) -> None:
+        if self.app and hasattr(self.app, "_select_canvas_by_data"):
+            self.app._select_canvas_by_data(self.canvas_data)
+
+
+class TagWidget(Static):
+    DEFAULT_CSS = """
+    TagWidget {
+        width: 100%;
+        height: 3;
+        padding: 0 1;
+        border: solid $primary-background;
+        margin-bottom: 1;
+        layout: horizontal;
+    }
+    TagWidget:hover { background: $boost; }
+    TagWidget.selected {
+        border: solid $accent;
+        background: $surface-lighten-1;
+    }
+    TagWidget .tag-icon { width: 4; height: 1; }
+    TagWidget .tag-name { width: 1fr; height: 1; text-style: bold; color: #90EE90; }
+    TagWidget .tag-count { width: 20; height: 1; text-align: right; color: $text-muted; }
+    TagWidget .tag-time { width: 17; height: 1; text-align: right; color: $text-muted; }
+    """
+
+    def __init__(self, tag_data: Tag, task_count: int = 0, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.tag_data = tag_data
+        self.task_count = task_count
+        self._selected = False
+
+    def compose(self) -> ComposeResult:
+        yield Label("🏷️", classes="tag-icon")
+        yield Label(self.tag_data.name, classes="tag-name")
+        count_str = f"{self.task_count} tarea(s)"
+        yield Label(count_str, classes="tag-count")
+        yield Label(format_datetime_display(self.tag_data.created_at), classes="tag-time")
+
+    @property
+    def selected(self) -> bool:
+        return self._selected
+
+    @selected.setter
+    def selected(self, value: bool) -> None:
+        self._selected = value
+        if value:
+            self.add_class("selected")
+        else:
+            self.remove_class("selected")
+
+    def on_click(self) -> None:
+        if self.app and hasattr(self.app, "_select_tag_by_data"):
+            self.app._select_tag_by_data(self.tag_data)
 
 class CanvasEditorModal(ModalScreen[Optional[dict]]):
     DEFAULT_CSS = """
@@ -2270,15 +2376,20 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
     CanvasEditorModal .color-button {
         min-width: 8;
     }
+    CanvasEditorModal .tags-row { width: 100%; height: auto; align: left middle; margin-bottom: 1; layout: horizontal; }
+    CanvasEditorModal .tags-display { width: 1fr; padding: 0 1; }
     """
     BINDINGS = [
         Binding("escape", "cancel", show=False),
         Binding("ctrl+s", "save", show=False, priority=True),
     ]
 
-    def __init__(self, canvas_data: Canvas = None, **kwargs) -> None:
+    def __init__(self, canvas_data: Canvas = None, all_tags: list[Tag] = None, selected_tag_ids: list[int] = None, selected_task_ids: list[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.canvas_data = canvas_data or Canvas(id=0, title="Nueva Pizarra", width=50, height=20)
+        self.all_tags = all_tags or []
+        self.selected_tag_ids = selected_tag_ids if selected_tag_ids is not None else (list(self.canvas_data.tags) if self.canvas_data and self.canvas_data.tags else [])
+        self.selected_task_ids = selected_task_ids or []
         self.current_tool = "draw"
         self.current_color = "[white]█[/white]"
         self.is_drawing = False
@@ -2298,6 +2409,16 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
 
             yield Label("Título:", classes="section-label")
             yield UndoableInput(value=self.canvas_data.title, id="title-input")
+
+            yield Label("Etiquetas:", classes="section-label")
+            with Horizontal(classes="tags-row"):
+                yield Label(self._format_tags(), id="tags-display", classes="tags-display")
+                yield Button("🏷️ Seleccionar", id="select-tags")
+
+            yield Label("Tareas asociadas (opcional):", classes="section-label")
+            with Horizontal(classes="tags-row"):
+                yield Label(self._format_tasks(), id="task-display", classes="tags-display")
+                yield Button("📌 Seleccionar", id="select-task")
 
             yield Label("Herramientas:", classes="section-label")
             with Horizontal(classes="tools-row"):
@@ -2418,6 +2539,41 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
 
             self.render_canvas()
 
+    def _format_tags(self) -> str:
+        if not self.selected_tag_ids:
+            return "Sin etiquetas"
+        names = [t.name for tid in self.selected_tag_ids for t in self.all_tags if t.id == tid]
+        return f"🏷️ {', '.join(names)}" if names else "Sin etiquetas"
+
+    def _format_tasks(self) -> str:
+        if not self.selected_task_ids:
+            return "Sin tareas asociadas"
+        all_tasks = getattr(self.app, "tasks", [])
+        names = []
+        for tid in self.selected_task_ids:
+            task = next((t for t in all_tasks if t.id == tid), None)
+            if task:
+                txt = task.text[:25] + "..." if len(task.text) > 25 else task.text
+                names.append(txt)
+        return f"📌 {', '.join(names)}" if names else "Sin tareas asociadas"
+
+    @on(Button.Pressed, "#select-tags")
+    def on_select_tags(self) -> None:
+        def on_tags_selected(result: Optional[list[int]]) -> None:
+            if result is not None:
+                self.selected_tag_ids = result
+                self.query_one("#tags-display", Label).update(self._format_tags())
+        self.app.push_screen(TagPickerModal(all_tags=self.all_tags, selected_tag_ids=self.selected_tag_ids), on_tags_selected)
+
+    @on(Button.Pressed, "#select-task")
+    def on_select_task(self) -> None:
+        def on_tasks_selected(result: Optional[list[int]]) -> None:
+            if result is not None:
+                self.selected_task_ids = result
+                self.query_one("#task-display", Label).update(self._format_tasks())
+        tasks = getattr(self.app, "tasks", [])
+        self.app.push_screen(MultiTaskPickerModal(tasks=tasks, selected_task_ids=self.selected_task_ids), on_tasks_selected)
+
     def action_save(self) -> None:
         title = self.query_one("#title-input", Input).value.strip()
 
@@ -2426,13 +2582,15 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
             return
 
         self.canvas_data.title = title
+        self.canvas_data.tags = list(self.selected_tag_ids)
         self.dismiss({
             "canvas": self.canvas_data,
             "title": title,
             "grid": self.canvas_data.grid,
             "width": self.canvas_data.width,
             "height": self.canvas_data.height,
-            "target_task_ids": getattr(self, "selected_task_ids", [])
+            "tags": self.selected_tag_ids,
+            "target_task_ids": self.selected_task_ids
         })
 
     @on(Button.Pressed, "#save")
@@ -3254,17 +3412,13 @@ class MultiTaskPickerModal(ModalScreen[Optional[list[int]]]):
     }
     MultiTaskPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
     MultiTaskPickerModal #task-picker-list { width: 100%; height: 20; overflow-y: auto; border: solid $primary-background; padding: 1; }
-    MultiTaskPickerModal .picker-item {
+    MultiTaskPickerModal .item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
-        background: $surface-lighten-1;
     }
-    MultiTaskPickerModal .picker-item.selected {
-        border: heavy $accent;
-        background: $primary;
-        color: $text;
-        text-style: bold;
-    }
+    MultiTaskPickerModal .item:hover { background: $boost; }
+    MultiTaskPickerModal .item.selected { border: solid $accent; background: $surface-lighten-1; }
+    MultiTaskPickerModal .item.checked { color: $success; }
     MultiTaskPickerModal .empty-msg { width: 100%; text-align: center; color: $text-muted; text-style: italic; padding: 2; }
     MultiTaskPickerModal .hint { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
     MultiTaskPickerModal .button-row { width: 100%; height: 3; align: center middle; }
@@ -3307,10 +3461,11 @@ class MultiTaskPickerModal(ModalScreen[Optional[list[int]]]):
         else:
             for i, t in enumerate(self.tasks):
                 txt = t.text[:40] + "..." if len(t.text) > 40 else t.text
-                checked = "[✓] " if t.id in self.selected_task_ids else "[ ] "
-                prefix = "👉 " if i == self.selected_index else "   "
-                item = Static(f"{prefix}{checked}{txt}", id=f"mtp-{i}", classes="picker-item")
+                checked = "☑" if t.id in self.selected_task_ids else "☐"
+                item = Static(f"{checked}  {txt}", id=f"mtp-{i}", classes="item")
                 await container.mount(item)
+                if t.id in self.selected_task_ids:
+                    item.add_class("checked")
                 if i == self.selected_index:
                     item.add_class("selected")
 
@@ -3331,22 +3486,22 @@ class MultiTaskPickerModal(ModalScreen[Optional[list[int]]]):
                 self.selected_task_ids.remove(tid)
             else:
                 self.selected_task_ids.add(tid)
-            self.update_selection()
+            self.call_later(self.refresh_list)
 
     def update_selection(self) -> None:
         for i in range(len(self.tasks)):
             try:
                 item = self.query_one(f"#mtp-{i}", Static)
-                is_sel = (i == self.selected_index)
-                item.set_class(is_sel, "selected")
-                t = self.tasks[i]
-                txt = t.text[:40] + "..." if len(t.text) > 40 else t.text
-                checked = "[✓] " if t.id in self.selected_task_ids else "[ ] "
-                prefix = "👉 " if is_sel else "   "
-                item.update(f"{prefix}{checked}{txt}")
-                if is_sel:
-                    item.scroll_visible()
+                item.set_class(i == self.selected_index, "selected")
             except Exception: pass
+        self.scroll_to_selected()
+
+    def scroll_to_selected(self) -> None:
+        if self.selected_index >= 0:
+            try:
+                item = self.query_one(f"#mtp-{self.selected_index}", Static)
+                item.scroll_visible()
+            except: pass
 
     @on(Button.Pressed, "#save")
     def on_save_btn(self) -> None:
@@ -3377,17 +3532,12 @@ class TaskPickerModal(ModalScreen[Optional[Task]]):
     }
     TaskPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
     TaskPickerModal #task-picker-list { width: 100%; height: 18; overflow-y: auto; border: solid $primary-background; padding: 1; }
-    TaskPickerModal .picker-item {
+    TaskPickerModal .item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
-        background: $surface-lighten-1;
     }
-    TaskPickerModal .picker-item.selected {
-        border: heavy $accent;
-        background: $primary;
-        color: $text;
-        text-style: bold;
-    }
+    TaskPickerModal .item:hover { background: $boost; }
+    TaskPickerModal .item.selected { border: solid $accent; background: $surface-lighten-1; }
     TaskPickerModal .empty-msg { width: 100%; text-align: center; color: $text-muted; text-style: italic; padding: 2; }
     TaskPickerModal .hint { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
     TaskPickerModal .button-row { width: 100%; height: 3; align: center middle; }
@@ -3434,9 +3584,8 @@ class TaskPickerModal(ModalScreen[Optional[Task]]):
         else:
             for i, t in enumerate(self.tasks):
                 txt = t.text[:40] + "..." if len(t.text) > 40 else t.text
-                checked = "📌 " if t.id == self.selected_task_id else "  "
-                prefix = "👉 " if i == self.selected_index else "   "
-                item = Static(f"{prefix}{checked}{txt}", id=f"tp-{i}", classes="picker-item")
+                checked = "📌 " if t.id == self.selected_task_id else "   "
+                item = Static(f"{checked}{txt}", id=f"tp-{i}", classes="item")
                 await container.mount(item)
                 if i == self.selected_index:
                     item.add_class("selected")
@@ -3455,16 +3604,16 @@ class TaskPickerModal(ModalScreen[Optional[Task]]):
         for i in range(len(self.tasks)):
             try:
                 item = self.query_one(f"#tp-{i}", Static)
-                is_sel = (i == self.selected_index)
-                item.set_class(is_sel, "selected")
-                t = self.tasks[i]
-                txt = t.text[:40] + "..." if len(t.text) > 40 else t.text
-                checked = "📌 " if t.id == self.selected_task_id else "  "
-                prefix = "👉 " if is_sel else "   "
-                item.update(f"{prefix}{checked}{txt}")
-                if is_sel:
-                    item.scroll_visible()
+                item.set_class(i == self.selected_index, "selected")
             except Exception: pass
+        self.scroll_to_selected()
+
+    def scroll_to_selected(self) -> None:
+        if self.selected_index >= 0:
+            try:
+                item = self.query_one(f"#tp-{self.selected_index}", Static)
+                item.scroll_visible()
+            except: pass
 
     @on(Button.Pressed, "#select")
     def on_select(self) -> None:
@@ -3488,27 +3637,26 @@ class TaskPickerModal(ModalScreen[Optional[Task]]):
         self.dismiss(None)
 
 
-class GlobalNotesPickerModal(ModalScreen[Optional[Note]]):
+class GlobalNotesPickerModal(ModalScreen[Optional[list[Note]]]):
     DEFAULT_CSS = """
     GlobalNotesPickerModal { align: center middle; }
     GlobalNotesPickerModal > VerticalScroll {
-        width: 75; height: 28; border: thick $primary;
+        width: 75; height: 30; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     GlobalNotesPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
-    GlobalNotesPickerModal #gn-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
-    GlobalNotesPickerModal .picker-item {
+    GlobalNotesPickerModal #gn-list { width: 100%; height: 18; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    GlobalNotesPickerModal .item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
-        background: $surface-lighten-1;
     }
-    GlobalNotesPickerModal .picker-item.selected {
-        border: heavy $accent;
-        background: $primary;
-        color: $text;
-        text-style: bold;
-    }
+    GlobalNotesPickerModal .item:hover { background: $boost; }
+    GlobalNotesPickerModal .item.selected { border: solid $accent; background: $surface-lighten-1; }
+    GlobalNotesPickerModal .item.checked { color: $success; }
+    GlobalNotesPickerModal .empty-msg { width: 100%; text-align: center; color: $text-muted; text-style: italic; padding: 2; }
     GlobalNotesPickerModal .hint { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
+    GlobalNotesPickerModal .button-row { width: 100%; height: 3; align: center middle; }
+    GlobalNotesPickerModal Button { margin: 0 1; }
     """
     BINDINGS = [
         Binding("escape", "cancel", show=False),
@@ -3516,19 +3664,28 @@ class GlobalNotesPickerModal(ModalScreen[Optional[Note]]):
         Binding("down", "move_down", show=False),
         Binding("k", "move_up", show=False),
         Binding("j", "move_down", show=False),
-        Binding("enter", "select", show=False),
+        Binding("space", "toggle_item", show=False),
+        Binding("enter", "save", show=False),
     ]
 
-    def __init__(self, global_notes: list[Note], **kwargs) -> None:
+    def __init__(self, global_notes: list[Note], selected_note_ids: list[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.global_notes = global_notes or []
+        self.selected_indices: set[int] = set()
+        if selected_note_ids:
+            for i, n in enumerate(self.global_notes):
+                if n.id in selected_note_ids:
+                    self.selected_indices.add(i)
         self.selected_index = 0 if self.global_notes else -1
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
-            yield Label("🌐 Seleccionar Nota Global", classes="modal-title")
+            yield Label("🌐 Seleccionar Notas Globales", classes="modal-title")
             yield Container(id="gn-list")
-            yield Label("↑↓ Navegar | Enter: Seleccionar para copiar | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | Enter: Confirmar selección | Esc: Cancelar", classes="hint")
+            with Horizontal(classes="button-row"):
+                yield Button("Seleccionar", variant="primary", id="save")
+                yield Button("Cancelar", variant="default", id="cancel")
 
     async def on_mount(self) -> None:
         await self.refresh_list()
@@ -3536,12 +3693,17 @@ class GlobalNotesPickerModal(ModalScreen[Optional[Note]]):
     async def refresh_list(self) -> None:
         container = self.query_one("#gn-list", Container)
         await container.remove_children()
-        for i, n in enumerate(self.global_notes):
-            prefix = "👉 " if i == self.selected_index else "   "
-            item = Static(f"{prefix}📝 {n.title}", id=f"gn-{i}", classes="picker-item")
-            await container.mount(item)
-            if i == self.selected_index:
-                item.add_class("selected")
+        if not self.global_notes:
+            await container.mount(Label("No hay notas globales disponibles.", classes="empty-msg"))
+        else:
+            for i, n in enumerate(self.global_notes):
+                checked = "☑" if i in self.selected_indices else "☐"
+                item = Static(f"{checked}  📝 {n.title}", id=f"gn-{i}", classes="item")
+                await container.mount(item)
+                if i in self.selected_indices:
+                    item.add_class("checked")
+                if i == self.selected_index:
+                    item.add_class("selected")
 
     def action_move_up(self) -> None:
         if self.global_notes and self.selected_index > 0:
@@ -3553,26 +3715,46 @@ class GlobalNotesPickerModal(ModalScreen[Optional[Note]]):
             self.selected_index += 1
             self.update_selection()
 
+    def action_toggle_item(self) -> None:
+        if self.global_notes and 0 <= self.selected_index < len(self.global_notes):
+            if self.selected_index in self.selected_indices:
+                self.selected_indices.remove(self.selected_index)
+            else:
+                self.selected_indices.add(self.selected_index)
+            self.call_later(self.refresh_list)
+
     def update_selection(self) -> None:
         for i in range(len(self.global_notes)):
             try:
                 item = self.query_one(f"#gn-{i}", Static)
-                is_sel = (i == self.selected_index)
-                item.set_class(is_sel, "selected")
-                prefix = "👉 " if is_sel else "   "
-                item.update(f"{prefix}📝 {self.global_notes[i].title}")
-                if is_sel:
-                    item.scroll_visible()
+                item.set_class(i == self.selected_index, "selected")
             except Exception: pass
+        self.scroll_to_selected()
 
-    def action_select(self) -> None:
-        if self.global_notes and 0 <= self.selected_index < len(self.global_notes):
-            self.dismiss(self.global_notes[self.selected_index])
+    def scroll_to_selected(self) -> None:
+        if self.selected_index >= 0:
+            try:
+                item = self.query_one(f"#gn-{self.selected_index}", Static)
+                item.scroll_visible()
+            except: pass
+
+    def action_save(self) -> None:
+        if self.selected_indices:
+            self.dismiss([self.global_notes[i] for i in sorted(self.selected_indices)])
         else:
             self.dismiss(None)
 
+    @on(Button.Pressed, "#save")
+    def on_save_btn(self) -> None:
+        self.action_save()
+
+    @on(Button.Pressed, "#cancel")
+    def on_cancel_btn(self) -> None:
+        self.dismiss(None)
+
     def action_cancel(self) -> None:
         self.dismiss(None)
+
 
 
 class NoteEditModal(ModalScreen[Optional[dict]]):
@@ -3660,9 +3842,9 @@ class NoteEditModal(ModalScreen[Optional[dict]]):
             with Horizontal(classes="tags-row"):
                 yield Label(self._format_tags(), id="tags-display", classes="tags-display")
                 yield Button("🏷️ Seleccionar", id="select-tags")
-            yield Label("Tarea asociada (opcional):", classes="section-label")
+            yield Label("Tareas asociadas (opcional):", classes="section-label")
             with Horizontal(classes="tags-row"):
-                yield Label(self._format_task(), id="task-display", classes="tags-display")
+                yield Label(self._format_tasks(), id="task-display", classes="tags-display")
                 yield Button("📌 Seleccionar", id="select-task")
             with Horizontal(classes="button-row"):
                 yield Button("Guardar", variant="primary", id="save")
@@ -3678,29 +3860,32 @@ class NoteEditModal(ModalScreen[Optional[dict]]):
                 tag_names.append(tag.name)
         return ", ".join(tag_names) if tag_names else "Sin etiquetas"
 
-    def _format_task(self) -> str:
-        selected_task = getattr(self, "selected_task", None)
-        if not selected_task:
-            return "Sin tarea asociada"
-        txt = selected_task.text[:30] + "..." if len(selected_task.text) > 30 else selected_task.text
-        return f"📌 {txt}"
+    def _format_tasks(self) -> str:
+        selected_tasks = getattr(self, "selected_tasks", [])
+        if not selected_tasks:
+            return "Sin tareas asociadas"
+        all_tasks = getattr(self.app, "tasks", [])
+        names = []
+        for tid in selected_tasks:
+            task = next((t for t in all_tasks if t.id == tid), None)
+            if task:
+                txt = task.text[:25] + "..." if len(task.text) > 25 else task.text
+                names.append(txt)
+        return f"📌 {', '.join(names)}" if names else "Sin tareas asociadas"
 
     @on(Button.Pressed, "#select-task")
     def on_select_task(self) -> None:
-        def on_task_selected(result) -> None:
-            if result is False:
-                self.selected_task = None
-                self.query_one("#task-display", Label).update(self._format_task())
-            elif result is not None:
-                self.selected_task = result
-                self.query_one("#task-display", Label).update(self._format_task())
+        def on_tasks_selected(result) -> None:
+            if result is not None:
+                self.selected_tasks = result
+                self.query_one("#task-display", Label).update(self._format_tasks())
         tasks = getattr(self.app, "tasks", [])
-        current_id = self.selected_task.id if getattr(self, "selected_task", None) else None
-        self.app.push_screen(TaskPickerModal(tasks=tasks, selected_task_id=current_id), on_task_selected)
+        current_ids = getattr(self, "selected_tasks", [])
+        self.app.push_screen(MultiTaskPickerModal(tasks=tasks, selected_task_ids=current_ids), on_tasks_selected)
 
     async def on_mount(self) -> None:
-        if not hasattr(self, "selected_task"):
-            self.selected_task = None
+        if not hasattr(self, "selected_tasks"):
+            self.selected_tasks = []
         self.query_one("#title-input", Input).focus()
         await self._update_image_buttons()
         await self._update_file_buttons()
@@ -3874,7 +4059,7 @@ class NoteEditModal(ModalScreen[Optional[dict]]):
             "image_path": self.current_image_path if self.current_image_path else None,
             "file_path": self.current_file_path if self.current_file_path else None,
             "tags": self.selected_tag_ids,
-            "target_task_id": self.selected_task.id if getattr(self, "selected_task", None) else None
+            "target_task_ids": list(getattr(self, "selected_tasks", []))
         })
 
     @on(Button.Pressed, "#save")
@@ -4140,7 +4325,7 @@ class VoiceNoteEditModal(ModalScreen[Optional[dict]]):
     DEFAULT_CSS = """
     VoiceNoteEditModal { align: center middle; }
     VoiceNoteEditModal > VerticalScroll {
-        width: 75; height: 38; border: thick $primary;
+        width: 90%; max-width: 100; height: 90%; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     VoiceNoteEditModal .modal-title { text-align: center; text-style: bold; width: 100%; margin-bottom: 1; }
@@ -4149,7 +4334,9 @@ class VoiceNoteEditModal(ModalScreen[Optional[dict]]):
     VoiceNoteEditModal #description-input { width: 100%; height: 5; border: solid $primary; padding: 1; }
     VoiceNoteEditModal .audio-info { width: 100%; padding: 1; background: $surface-lighten-1; border: solid $primary-background; color: $success; }
     VoiceNoteEditModal .button-row { width: 100%; height: auto; align: center middle; margin-top: 2; }
-    VoiceNoteEditModal .audio-button-row { width: 100%; height: auto; align: left middle; layout: horizontal; margin-bottom: 0; }
+    VoiceNoteEditModal .audio-button-row { width: 100%; height: auto; align: left middle; layout: horizontal; margin-bottom: 1; }
+    VoiceNoteEditModal .tags-row { width: 100%; height: auto; align: left middle; margin-bottom: 1; layout: horizontal; }
+    VoiceNoteEditModal .tags-display { width: 1fr; padding: 0 1; }
     VoiceNoteEditModal Button { margin: 0 1; }
     """
     BINDINGS = [
@@ -4159,7 +4346,7 @@ class VoiceNoteEditModal(ModalScreen[Optional[dict]]):
 
     def __init__(self, modal_title: str = "🎤 Nota de Voz", initial_title: str = "",
                  initial_description: str = "", initial_audio: str = "", initial_duration: float = 0.0,
-                 all_tags: list[Tag] = None, selected_tag_ids: list[int] = None, **kwargs) -> None:
+                 all_tags: list[Tag] = None, selected_tag_ids: list[int] = None, selected_tasks: list[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.modal_title = modal_title
         self.initial_title = initial_title
@@ -4168,6 +4355,7 @@ class VoiceNoteEditModal(ModalScreen[Optional[dict]]):
         self.current_duration = initial_duration
         self.all_tags = all_tags or []
         self.selected_tag_ids = list(selected_tag_ids) if selected_tag_ids else []
+        self.selected_tasks = list(selected_tasks) if selected_tasks else []
         self.audios_dir = Path.home() / "todo" / "audios"
         self.audios_dir.mkdir(exist_ok=True, parents=True)
 
@@ -4179,15 +4367,15 @@ class VoiceNoteEditModal(ModalScreen[Optional[dict]]):
             yield Label("Descripción (opcional):", classes="section-label")
             yield UndoableTextArea(self.initial_description, id="description-input", show_line_numbers=False)
             yield Label("Etiquetas:", classes="section-label")
-            with Horizontal(classes="audio-button-row"):
-                yield Label(self._format_tags(), id="tags-display", classes="audio-info")
+            with Horizontal(classes="tags-row"):
+                yield Label(self._format_tags(), id="tags-display", classes="tags-display")
                 yield Button("🏷️ Seleccionar", id="select-tags")
-            yield Label("Tarea asociada (opcional):", classes="section-label")
-            with Horizontal(classes="audio-button-row"):
-                yield Label(self._format_task(), id="task-display", classes="audio-info")
+            yield Label("Tareas asociadas (opcional):", classes="section-label")
+            with Horizontal(classes="tags-row"):
+                yield Label(self._format_tasks(), id="task-display", classes="tags-display")
                 yield Button("📌 Seleccionar", id="select-task")
             yield Label("Audio:", classes="section-label")
-            with Horizontal(id="audio-button-row", classes="audio-button-row"):
+            with Horizontal(id="audio-button-row", classes="tools-row"):
                 pass
             yield Container(id="audio-info-container")
             with Horizontal(classes="button-row"):
@@ -4195,8 +4383,8 @@ class VoiceNoteEditModal(ModalScreen[Optional[dict]]):
                 yield Button("Cancelar", variant="default", id="cancel")
 
     async def on_mount(self) -> None:
-        if not hasattr(self, "selected_task"):
-            self.selected_task = None
+        if not hasattr(self, "selected_tasks"):
+            self.selected_tasks = []
         self.query_one("#title-input", Input).focus()
         await self._update_audio_buttons()
 
@@ -4206,25 +4394,28 @@ class VoiceNoteEditModal(ModalScreen[Optional[dict]]):
         names = [t.name for tid in self.selected_tag_ids for t in self.all_tags if t.id == tid]
         return f"🏷️ {', '.join(names)}" if names else "Sin etiquetas"
 
-    def _format_task(self) -> str:
-        selected_task = getattr(self, "selected_task", None)
-        if not selected_task:
-            return "Sin tarea asociada"
-        txt = selected_task.text[:30] + "..." if len(selected_task.text) > 30 else selected_task.text
-        return f"📌 {txt}"
+    def _format_tasks(self) -> str:
+        selected_tasks = getattr(self, "selected_tasks", [])
+        if not selected_tasks:
+            return "Sin tareas asociadas"
+        all_tasks = getattr(self.app, "tasks", [])
+        names = []
+        for tid in selected_tasks:
+            task = next((t for t in all_tasks if t.id == tid), None)
+            if task:
+                txt = task.text[:25] + "..." if len(task.text) > 25 else task.text
+                names.append(txt)
+        return f"📌 {', '.join(names)}" if names else "Sin tareas asociadas"
 
     @on(Button.Pressed, "#select-task")
     def on_select_task(self) -> None:
-        def on_task_selected(result) -> None:
-            if result is False:
-                self.selected_task = None
-                self.query_one("#task-display", Label).update(self._format_task())
-            elif result is not None:
-                self.selected_task = result
-                self.query_one("#task-display", Label).update(self._format_task())
+        def on_tasks_selected(result) -> None:
+            if result is not None:
+                self.selected_tasks = result
+                self.query_one("#task-display", Label).update(self._format_tasks())
         tasks = getattr(self.app, "tasks", [])
-        current_id = self.selected_task.id if getattr(self, "selected_task", None) else None
-        self.app.push_screen(TaskPickerModal(tasks=tasks, selected_task_id=current_id), on_task_selected)
+        current_ids = getattr(self, "selected_tasks", [])
+        self.app.push_screen(MultiTaskPickerModal(tasks=tasks, selected_task_ids=current_ids), on_tasks_selected)
 
     async def _update_audio_buttons(self) -> None:
         button_row = self.query_one("#audio-button-row", Horizontal)
@@ -4293,13 +4484,31 @@ class VoiceNoteEditModal(ModalScreen[Optional[dict]]):
 
     def _browse_audio_file(self) -> Optional[str]:
         try:
+            import tkinter as tk
+            from tkinter import filedialog
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            file_path = filedialog.askopenfilename(
+                title="Seleccionar archivo MP3",
+                filetypes=[
+                    ("Archivos MP3", "*.mp3"),
+                    ("Archivos de audio", "*.mp3 *.wav *.ogg *.m4a"),
+                    ("Todos los archivos", "*.*")
+                ]
+            )
+            root.destroy()
+            if file_path:
+                return file_path
+        except Exception: pass
+        try:
             system = platform.system()
             if system == "Windows":
                 ps_script = '''
                 Add-Type -AssemblyName System.Windows.Forms
                 $FileBrowser = New-Object System.Windows.Forms.OpenFileDialog -Property @{
-                    Filter = 'Archivos de audio (*.mp3;*.wav;*.ogg;*.m4a)|*.mp3;*.wav;*.ogg;*.m4a|Todos (*.*)|*.*'
-                    Title = 'Seleccionar archivo de audio'
+                    Filter = 'Archivos MP3 (*.mp3)|*.mp3|Archivos de audio (*.mp3;*.wav;*.ogg;*.m4a)|*.mp3;*.wav;*.ogg;*.m4a|Todos (*.*)|*.*'
+                    Title = 'Seleccionar archivo MP3'
                 }
                 $null = $FileBrowser.ShowDialog()
                 Write-Output $FileBrowser.FileName
@@ -4308,13 +4517,13 @@ class VoiceNoteEditModal(ModalScreen[Optional[dict]]):
                 path = res.stdout.strip()
                 return path if path else None
             elif system == "Darwin":
-                script = 'set theFile to choose file with prompt "Seleccionar audio"\nreturn POSIX path of theFile'
+                script = 'set theFile to choose file with prompt "Seleccionar audio MP3"\nreturn POSIX path of theFile'
                 res = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=300)
                 path = res.stdout.strip()
                 return path if path else None
             else:
                 try:
-                    res = subprocess.run(["zenity", "--file-selection", "--title=Seleccionar audio"], capture_output=True, text=True, timeout=300)
+                    res = subprocess.run(["zenity", "--file-selection", "--title=Seleccionar audio MP3", "--file-filter=*.mp3"], capture_output=True, text=True, timeout=300)
                     return res.stdout.strip() or None
                 except FileNotFoundError:
                     return None
@@ -4348,7 +4557,7 @@ class VoiceNoteEditModal(ModalScreen[Optional[dict]]):
             "audio_path": self.current_audio_path,
             "duration": self.current_duration,
             "tags": self.selected_tag_ids,
-            "target_task_id": self.selected_task.id if getattr(self, "selected_task", None) else None
+            "target_task_ids": list(getattr(self, "selected_tasks", []))
         })
 
     @on(Button.Pressed, "#save")
@@ -4407,32 +4616,7 @@ class TaskNotesModal(ModalScreen[list[Note]]):
                 yield Button("➕ Añadir", variant="primary", id="add")
                 yield Button("👁️ Ver", variant="default", id="view")
                 yield Button("✏️ Editar", variant="default", id="edit")
-            with Horizontal(classes="button-row"):
-                yield Button("🌐 Desde Global", variant="default", id="import-global")
                 yield Button("🗑️ Eliminar", variant="error", id="delete")
-
-    @on(Button.Pressed, "#import-global")
-    def on_import_global(self) -> None:
-        if not self.global_notes:
-            self.app.notify("No hay notas globales para importar", severity="warning")
-            return
-        def on_selected(g_note: Optional[Note]) -> None:
-            if g_note:
-                new_note = Note(
-                    id=self.next_note_id,
-                    title=f"{g_note.title} (Copia)",
-                    description=g_note.description,
-                    url=g_note.url,
-                    image_path=g_note.image_path,
-                    file_path=g_note.file_path,
-                    tags=list(g_note.tags) if g_note.tags else []
-                )
-                self.next_note_id += 1
-                self.notes.append(new_note)
-                self.selected_index = len(self.notes) - 1
-                self.call_later(self.refresh_notes_list)
-                self.app.notify("📝 Nota importada desde lista global", severity="information")
-        self.app.push_screen(GlobalNotesPickerModal(self.global_notes), on_selected)
 
     async def on_mount(self) -> None:
         await self.refresh_notes_list()
@@ -4591,13 +4775,11 @@ class VoiceNotesModal(ModalScreen[list[VoiceNote]]):
         with VerticalScroll():
             yield Label("🎤 Audios de la Tarea", classes="modal-title")
             yield Container(id="voice-notes-list")
-            yield Label("↑↓/k/j: Navegar | r: Grabar/Importar | e: Editar | d: Eliminar | Enter/p: Reproducir | Esc: Guardar/Cerrar", classes="hint")
+            yield Label("↑↓/k/j: Navegar | r: Grabar | e: Editar | d: Eliminar | Enter/p: Reproducir | Esc: Guardar/Cerrar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("⏺ Añadir/Grabar", variant="primary", id="add")
                 yield Button("▶ Reproducir", variant="success", id="play")
                 yield Button("✏️ Editar", variant="default", id="edit")
-            with Horizontal(classes="button-row"):
-                yield Button("🌐 Desde Global", variant="default", id="import-global")
                 yield Button("🗑️ Eliminar", variant="error", id="delete")
 
     async def on_mount(self) -> None:
@@ -4698,37 +4880,7 @@ class VoiceNotesModal(ModalScreen[list[VoiceNote]]):
                 self.call_later(self.refresh_list)
         self.app.push_screen(ConfirmModal(f"¿Eliminar audio '{txt}'?"), on_confirm)
 
-    @on(Button.Pressed, "#import-global")
-    def on_import_global(self) -> None:
-        if not self.global_voice_notes:
-            self.app.notify("No hay notas de voz globales para importar", severity="warning")
-            return
-        def on_selected(g_vn: Optional[VoiceNote]) -> None:
-            if g_vn:
-                copied_path = ""
-                if g_vn.audio_path and os.path.exists(g_vn.audio_path):
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    ext = Path(g_vn.audio_path).suffix or ".mp3"
-                    dest = Path.home() / "todo" / "audios" / f"voz_task_{timestamp}{ext}"
-                    try:
-                        shutil.copy2(g_vn.audio_path, dest)
-                        copied_path = str(dest)
-                    except Exception:
-                        copied_path = g_vn.audio_path
-                new_vn = VoiceNote(
-                    id=self.next_voice_note_id,
-                    title=f"{g_vn.title} (Copia)",
-                    audio_path=copied_path,
-                    description=g_vn.description,
-                    duration=g_vn.duration,
-                    tags=list(g_vn.tags) if g_vn.tags else []
-                )
-                self.next_voice_note_id += 1
-                self.voice_notes.append(new_vn)
-                self.selected_index = len(self.voice_notes) - 1
-                self.call_later(self.refresh_list)
-                self.app.notify("🎤 Audio importado desde lista global", severity="information")
-        self.app.push_screen(GlobalVoiceNotesPickerModal(self.global_voice_notes), on_selected)
+
 
     @on(Button.Pressed, "#add")
     def on_add(self) -> None: self.action_record_audio()
@@ -4741,27 +4893,26 @@ class VoiceNotesModal(ModalScreen[list[VoiceNote]]):
     def action_close(self) -> None: self.dismiss(self.voice_notes)
 
 
-class GlobalVoiceNotesPickerModal(ModalScreen[Optional[VoiceNote]]):
+class GlobalVoiceNotesPickerModal(ModalScreen[Optional[list[VoiceNote]]]):
     DEFAULT_CSS = """
     GlobalVoiceNotesPickerModal { align: center middle; }
     GlobalVoiceNotesPickerModal > VerticalScroll {
-        width: 75; height: 28; border: thick $primary;
+        width: 75; height: 30; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     GlobalVoiceNotesPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
-    GlobalVoiceNotesPickerModal #gvn-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
-    GlobalVoiceNotesPickerModal .picker-item {
+    GlobalVoiceNotesPickerModal #gvn-list { width: 100%; height: 18; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    GlobalVoiceNotesPickerModal .item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
-        background: $surface-lighten-1;
     }
-    GlobalVoiceNotesPickerModal .picker-item.selected {
-        border: heavy $accent;
-        background: $primary;
-        color: $text;
-        text-style: bold;
-    }
+    GlobalVoiceNotesPickerModal .item:hover { background: $boost; }
+    GlobalVoiceNotesPickerModal .item.selected { border: solid $accent; background: $surface-lighten-1; }
+    GlobalVoiceNotesPickerModal .item.checked { color: $success; }
+    GlobalVoiceNotesPickerModal .empty-msg { width: 100%; text-align: center; color: $text-muted; text-style: italic; padding: 2; }
     GlobalVoiceNotesPickerModal .hint { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
+    GlobalVoiceNotesPickerModal .button-row { width: 100%; height: 3; align: center middle; }
+    GlobalVoiceNotesPickerModal Button { margin: 0 1; }
     """
     BINDINGS = [
         Binding("escape", "cancel", show=False),
@@ -4769,19 +4920,28 @@ class GlobalVoiceNotesPickerModal(ModalScreen[Optional[VoiceNote]]):
         Binding("down", "move_down", show=False),
         Binding("k", "move_up", show=False),
         Binding("j", "move_down", show=False),
-        Binding("enter", "select", show=False),
+        Binding("space", "toggle_item", show=False),
+        Binding("enter", "save", show=False),
     ]
 
-    def __init__(self, global_voice_notes: list[VoiceNote], **kwargs) -> None:
+    def __init__(self, global_voice_notes: list[VoiceNote], selected_vn_ids: list[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.global_voice_notes = global_voice_notes or []
+        self.selected_indices: set[int] = set()
+        if selected_vn_ids:
+            for i, vn in enumerate(self.global_voice_notes):
+                if vn.id in selected_vn_ids:
+                    self.selected_indices.add(i)
         self.selected_index = 0 if self.global_voice_notes else -1
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
-            yield Label("🌐 Seleccionar Audio Global", classes="modal-title")
+            yield Label("🌐 Seleccionar Audios Globales", classes="modal-title")
             yield Container(id="gvn-list")
-            yield Label("↑↓ Navegar | Enter: Seleccionar para copiar | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | Enter: Confirmar selección | Esc: Cancelar", classes="hint")
+            with Horizontal(classes="button-row"):
+                yield Button("Seleccionar", variant="primary", id="save")
+                yield Button("Cancelar", variant="default", id="cancel")
 
     async def on_mount(self) -> None:
         await self.refresh_list()
@@ -4789,14 +4949,19 @@ class GlobalVoiceNotesPickerModal(ModalScreen[Optional[VoiceNote]]):
     async def refresh_list(self) -> None:
         container = self.query_one("#gvn-list", Container)
         await container.remove_children()
-        for i, vn in enumerate(self.global_voice_notes):
-            dur = int(vn.duration)
-            m, s = divmod(dur, 60)
-            prefix = "👉 " if i == self.selected_index else "   "
-            item = Static(f"{prefix}🎤 {vn.title} ({m:02d}:{s:02d})", id=f"gvn-{i}", classes="picker-item")
-            await container.mount(item)
-            if i == self.selected_index:
-                item.add_class("selected")
+        if not self.global_voice_notes:
+            await container.mount(Label("No hay audios globales disponibles.", classes="empty-msg"))
+        else:
+            for i, vn in enumerate(self.global_voice_notes):
+                dur = int(vn.duration)
+                m, s = divmod(dur, 60)
+                checked = "☑" if i in self.selected_indices else "☐"
+                item = Static(f"{checked}  🎤 {vn.title} ({m:02d}:{s:02d})", id=f"gvn-{i}", classes="item")
+                await container.mount(item)
+                if i in self.selected_indices:
+                    item.add_class("checked")
+                if i == self.selected_index:
+                    item.add_class("selected")
 
     def action_move_up(self) -> None:
         if self.global_voice_notes and self.selected_index > 0:
@@ -4808,52 +4973,69 @@ class GlobalVoiceNotesPickerModal(ModalScreen[Optional[VoiceNote]]):
             self.selected_index += 1
             self.update_selection()
 
+    def action_toggle_item(self) -> None:
+        if self.global_voice_notes and 0 <= self.selected_index < len(self.global_voice_notes):
+            if self.selected_index in self.selected_indices:
+                self.selected_indices.remove(self.selected_index)
+            else:
+                self.selected_indices.add(self.selected_index)
+            self.call_later(self.refresh_list)
+
     def update_selection(self) -> None:
         for i in range(len(self.global_voice_notes)):
             try:
                 item = self.query_one(f"#gvn-{i}", Static)
-                is_sel = (i == self.selected_index)
-                item.set_class(is_sel, "selected")
-                vn = self.global_voice_notes[i]
-                dur = int(vn.duration)
-                m, s = divmod(dur, 60)
-                prefix = "👉 " if is_sel else "   "
-                item.update(f"{prefix}🎤 {vn.title} ({m:02d}:{s:02d})")
-                if is_sel:
-                    item.scroll_visible()
+                item.set_class(i == self.selected_index, "selected")
             except Exception: pass
+        self.scroll_to_selected()
 
-    def action_select(self) -> None:
-        if self.global_voice_notes and 0 <= self.selected_index < len(self.global_voice_notes):
-            self.dismiss(self.global_voice_notes[self.selected_index])
+    def scroll_to_selected(self) -> None:
+        if self.selected_index >= 0:
+            try:
+                item = self.query_one(f"#gvn-{self.selected_index}", Static)
+                item.scroll_visible()
+            except: pass
+
+    def action_save(self) -> None:
+        if self.selected_indices:
+            self.dismiss([self.global_voice_notes[i] for i in sorted(self.selected_indices)])
         else:
             self.dismiss(None)
+
+    @on(Button.Pressed, "#save")
+    def on_save_btn(self) -> None:
+        self.action_save()
+
+    @on(Button.Pressed, "#cancel")
+    def on_cancel_btn(self) -> None:
+        self.dismiss(None)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
 
 
-class GlobalCanvasPickerModal(ModalScreen[Optional[Canvas]]):
+
+
+class GlobalCanvasPickerModal(ModalScreen[Optional[list[Canvas]]]):
     DEFAULT_CSS = """
     GlobalCanvasPickerModal { align: center middle; }
     GlobalCanvasPickerModal > VerticalScroll {
-        width: 75; height: 28; border: thick $primary;
+        width: 75; height: 30; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     GlobalCanvasPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
-    GlobalCanvasPickerModal #gc-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
-    GlobalCanvasPickerModal .picker-item {
+    GlobalCanvasPickerModal #gc-list { width: 100%; height: 18; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    GlobalCanvasPickerModal .item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
-        background: $surface-lighten-1;
     }
-    GlobalCanvasPickerModal .picker-item.selected {
-        border: heavy $accent;
-        background: $primary;
-        color: $text;
-        text-style: bold;
-    }
+    GlobalCanvasPickerModal .item:hover { background: $boost; }
+    GlobalCanvasPickerModal .item.selected { border: solid $accent; background: $surface-lighten-1; }
+    GlobalCanvasPickerModal .item.checked { color: $success; }
+    GlobalCanvasPickerModal .empty-msg { width: 100%; text-align: center; color: $text-muted; text-style: italic; padding: 2; }
     GlobalCanvasPickerModal .hint { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
+    GlobalCanvasPickerModal .button-row { width: 100%; height: 3; align: center middle; }
+    GlobalCanvasPickerModal Button { margin: 0 1; }
     """
     BINDINGS = [
         Binding("escape", "cancel", show=False),
@@ -4861,19 +5043,28 @@ class GlobalCanvasPickerModal(ModalScreen[Optional[Canvas]]):
         Binding("down", "move_down", show=False),
         Binding("k", "move_up", show=False),
         Binding("j", "move_down", show=False),
-        Binding("enter", "select", show=False),
+        Binding("space", "toggle_item", show=False),
+        Binding("enter", "save", show=False),
     ]
 
-    def __init__(self, global_canvas_list: list[Canvas], **kwargs) -> None:
+    def __init__(self, global_canvas_list: list[Canvas], selected_canvas_ids: list[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.global_canvas_list = global_canvas_list or []
+        self.selected_indices: set[int] = set()
+        if selected_canvas_ids:
+            for i, c in enumerate(self.global_canvas_list):
+                if c.id in selected_canvas_ids:
+                    self.selected_indices.add(i)
         self.selected_index = 0 if self.global_canvas_list else -1
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
-            yield Label("🎨 Seleccionar Pizarra Global", classes="modal-title")
+            yield Label("🎨 Seleccionar Pizarras Globales", classes="modal-title")
             yield Container(id="gc-list")
-            yield Label("↑↓ Navegar | Enter: Seleccionar para copiar | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | Enter: Confirmar selección | Esc: Cancelar", classes="hint")
+            with Horizontal(classes="button-row"):
+                yield Button("Seleccionar", variant="primary", id="save")
+                yield Button("Cancelar", variant="default", id="cancel")
 
     async def on_mount(self) -> None:
         await self.refresh_list()
@@ -4881,12 +5072,17 @@ class GlobalCanvasPickerModal(ModalScreen[Optional[Canvas]]):
     async def refresh_list(self) -> None:
         container = self.query_one("#gc-list", Container)
         await container.remove_children()
-        for i, c in enumerate(self.global_canvas_list):
-            prefix = "👉 " if i == self.selected_index else "   "
-            item = Static(f"{prefix}🎨 {c.title}", id=f"gc-{i}", classes="picker-item")
-            await container.mount(item)
-            if i == self.selected_index:
-                item.add_class("selected")
+        if not self.global_canvas_list:
+            await container.mount(Label("No hay pizarras globales disponibles.", classes="empty-msg"))
+        else:
+            for i, c in enumerate(self.global_canvas_list):
+                checked = "☑" if i in self.selected_indices else "☐"
+                item = Static(f"{checked}  🎨 {c.title}", id=f"gc-{i}", classes="item")
+                await container.mount(item)
+                if i in self.selected_indices:
+                    item.add_class("checked")
+                if i == self.selected_index:
+                    item.add_class("selected")
 
     def action_move_up(self) -> None:
         if self.global_canvas_list and self.selected_index > 0:
@@ -4898,26 +5094,46 @@ class GlobalCanvasPickerModal(ModalScreen[Optional[Canvas]]):
             self.selected_index += 1
             self.update_selection()
 
+    def action_toggle_item(self) -> None:
+        if self.global_canvas_list and 0 <= self.selected_index < len(self.global_canvas_list):
+            if self.selected_index in self.selected_indices:
+                self.selected_indices.remove(self.selected_index)
+            else:
+                self.selected_indices.add(self.selected_index)
+            self.call_later(self.refresh_list)
+
     def update_selection(self) -> None:
         for i in range(len(self.global_canvas_list)):
             try:
                 item = self.query_one(f"#gc-{i}", Static)
-                is_sel = (i == self.selected_index)
-                item.set_class(is_sel, "selected")
-                prefix = "👉 " if is_sel else "   "
-                item.update(f"{prefix}🎨 {self.global_canvas_list[i].title}")
-                if is_sel:
-                    item.scroll_visible()
+                item.set_class(i == self.selected_index, "selected")
             except Exception: pass
+        self.scroll_to_selected()
 
-    def action_select(self) -> None:
-        if self.global_canvas_list and 0 <= self.selected_index < len(self.global_canvas_list):
-            self.dismiss(self.global_canvas_list[self.selected_index])
+    def scroll_to_selected(self) -> None:
+        if self.selected_index >= 0:
+            try:
+                item = self.query_one(f"#gc-{self.selected_index}", Static)
+                item.scroll_visible()
+            except: pass
+
+    def action_save(self) -> None:
+        if self.selected_indices:
+            self.dismiss([self.global_canvas_list[i] for i in sorted(self.selected_indices)])
         else:
             self.dismiss(None)
 
+    @on(Button.Pressed, "#save")
+    def on_save_btn(self) -> None:
+        self.action_save()
+
+    @on(Button.Pressed, "#cancel")
+    def on_cancel_btn(self) -> None:
+        self.dismiss(None)
+
     def action_cancel(self) -> None:
         self.dismiss(None)
+
 
 
 class TaskCanvasModal(ModalScreen[list[Canvas]]):
@@ -4964,7 +5180,6 @@ class TaskCanvasModal(ModalScreen[list[Canvas]]):
             with Horizontal(classes="button-row"):
                 yield Button("➕ Crear Pizarra", variant="primary", id="add")
                 yield Button("✏️ Editar", variant="default", id="edit")
-                yield Button("🌐 Desde Global", variant="default", id="import-global")
                 yield Button("🗑️ Eliminar", variant="error", id="delete")
 
     async def on_mount(self) -> None:
@@ -5053,27 +5268,7 @@ class TaskCanvasModal(ModalScreen[list[Canvas]]):
                 self.call_later(self.refresh_list)
         self.app.push_screen(ConfirmModal(f"¿Eliminar pizarra '{c.title}'?"), on_confirm)
 
-    @on(Button.Pressed, "#import-global")
-    def on_import_global(self) -> None:
-        if not self.global_canvas_list:
-            self.app.notify("No hay pizarras globales para importar", severity="warning")
-            return
-        def on_selected(g_c: Optional[Canvas]) -> None:
-            if g_c:
-                new_c = Canvas(
-                    id=self.next_canvas_id,
-                    title=f"{g_c.title} (Copia)",
-                    width=g_c.width,
-                    height=g_c.height,
-                    grid=[list(r) for r in g_c.grid],
-                    tags=list(g_c.tags) if g_c.tags else []
-                )
-                self.next_canvas_id += 1
-                self.canvas_list.append(new_c)
-                self.selected_index = len(self.canvas_list) - 1
-                self.call_later(self.refresh_list)
-                self.app.notify("🎨 Pizarra importada desde lista global", severity="information")
-        self.app.push_screen(GlobalCanvasPickerModal(self.global_canvas_list), on_selected)
+
 
     @on(Button.Pressed, "#add")
     def on_add(self) -> None: self.action_add_canvas()
@@ -6379,15 +6574,15 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
             yield Label("Notas:", classes="section-label")
             with Horizontal(classes="notes-row"):
                 yield Label(self._format_notes(), id="notes-display", classes="notes-display")
-                yield Button("📝 Gestionar", id="manage-notes")
+                yield Button("📌 Seleccionar", id="select-notes")
             yield Label("Audios:", classes="section-label")
             with Horizontal(classes="audios-row"):
                 yield Label(self._format_voice_notes(), id="audios-display", classes="audios-display")
-                yield Button("🎤 Gestionar", id="manage-voice-notes")
+                yield Button("📌 Seleccionar", id="select-voice-notes")
             yield Label("Pizarras:", classes="section-label")
             with Horizontal(classes="audios-row"):
                 yield Label(self._format_canvas_list(), id="canvas-display", classes="audios-display")
-                yield Button("🎨 Gestionar", id="manage-canvas")
+                yield Button("📌 Seleccionar", id="select-canvas")
             with Horizontal(classes="button-row"):
                 yield Button("Guardar", variant="primary", id="save")
                 yield Button("Cancelar", variant="default", id="cancel")
@@ -6477,27 +6672,7 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
 
         self.app.push_screen(SubtasksModal(self.subtasks, self.next_subtask_id, next_comment_id, all_tags=self.all_tags), on_result)  
 
-    @on(Button.Pressed, "#manage-notes")
-    def on_manage_notes(self) -> None:
-        def on_result(updated_notes: list) -> None:
-            if updated_notes is not None:
-                self.notes = updated_notes
-                if self.notes:
-                    self.next_note_id = max(n.id for n in self.notes) + 1
-                self.query_one("#notes-display", Label).update(self._format_notes())
-        global_notes = getattr(self.app, "notes", [])
-        self.app.push_screen(TaskNotesModal(self.notes, self.next_note_id, global_notes=global_notes, all_tags=self.all_tags), on_result)
 
-    @on(Button.Pressed, "#manage-voice-notes")
-    def on_manage_voice_notes(self) -> None:
-        def on_result(updated_vn: list) -> None:
-            if updated_vn is not None:
-                self.voice_notes = updated_vn
-                if self.voice_notes:
-                    self.next_voice_note_id = max(v.id for v in self.voice_notes) + 1
-                self.query_one("#audios-display", Label).update(self._format_voice_notes())
-        global_vn = getattr(self.app, "voice_notes", [])
-        self.app.push_screen(VoiceNotesModal(self.voice_notes, self.next_voice_note_id, global_voice_notes=global_vn, all_tags=self.all_tags), on_result)
     
     @on(Button.Pressed, "#change-group")
     def on_change_group(self) -> None:
@@ -6550,16 +6725,43 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
             return "Sin pizarras"
         return f"🎨 {count} pizarra(s)"
 
-    @on(Button.Pressed, "#manage-canvas")
-    def on_manage_canvas(self) -> None:
-        def on_result(updated_canvas: list) -> None:
-            if updated_canvas is not None:
-                self.canvas_list = updated_canvas
+    @on(Button.Pressed, "#select-notes")
+    def on_select_notes(self) -> None:
+        def on_result(result: Optional[list[Note]]) -> None:
+            if result is not None:
+                self.notes = result
+                if self.notes:
+                    self.next_note_id = max((n.id for n in self.notes), default=0) + 1
+                self.query_one("#notes-display", Label).update(self._format_notes())
+        global_notes = getattr(self.app, "notes", [])
+        current_ids = [n.id for n in self.notes]
+        self.app.push_screen(GlobalNotesPickerModal(global_notes, selected_note_ids=current_ids), on_result)
+
+    @on(Button.Pressed, "#select-voice-notes")
+    def on_select_voice_notes(self) -> None:
+        def on_result(result: Optional[list[VoiceNote]]) -> None:
+            if result is not None:
+                self.voice_notes = result
+                if self.voice_notes:
+                    self.next_voice_note_id = max((v.id for v in self.voice_notes), default=0) + 1
+                self.query_one("#audios-display", Label).update(self._format_voice_notes())
+        global_vn = getattr(self.app, "voice_notes", [])
+        current_ids = [v.id for v in self.voice_notes]
+        self.app.push_screen(GlobalVoiceNotesPickerModal(global_vn, selected_vn_ids=current_ids), on_result)
+
+    @on(Button.Pressed, "#select-canvas")
+    def on_select_canvas(self) -> None:
+        def on_result(result: Optional[list[Canvas]]) -> None:
+            if result is not None:
+                self.canvas_list = result
                 if self.canvas_list:
-                    self.next_canvas_id = max(c.id for c in self.canvas_list) + 1
+                    self.next_canvas_id = max((c.id for c in self.canvas_list), default=0) + 1
                 self.query_one("#canvas-display", Label).update(self._format_canvas_list())
         global_canvas = getattr(self.app, "canvas_list", [])
-        self.app.push_screen(TaskCanvasModal(self.canvas_list, self.next_canvas_id, global_canvas_list=global_canvas, all_tags=self.all_tags), on_result)
+        current_ids = [c.id for c in self.canvas_list]
+        self.app.push_screen(GlobalCanvasPickerModal(global_canvas, selected_canvas_ids=current_ids), on_result)
+
+
 
     @on(Button.Pressed, "#save")
     def on_save(self) -> None:
@@ -7615,6 +7817,45 @@ class TodoApp(App):
     #empty-message { width: 100%; height: 100%; content-align: center middle; color: $text-muted; text-style: italic; }
     #stats { dock: bottom; width: 100%; height: 1; background: $primary-background; color: $text; padding: 0 2; }
     #completed-separator { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
+    .section-separator-main {
+        width: 100%;
+        height: auto;
+        content-align: center middle;
+        text-align: center;
+        color: #bd93f9;
+        text-style: bold;
+        margin: 1 0;
+    }
+    .empty-section-label {
+        width: 100%;
+        height: 1;
+        content-align: center middle;
+        color: $text-muted;
+        text-style: italic;
+        margin-bottom: 1;
+    }
+    .section-separator-sub {
+        width: 100%;
+        height: 1;
+        text-align: left;
+        color: $primary;
+        text-style: bold;
+        margin: 1 0 0 1;
+    }
+    .general-tags-container {
+        width: 100%;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        margin-bottom: 1;
+    }
+    .general-tag-chip {
+        background: #90EE90;
+        color: #000000;
+        margin-right: 1;
+        padding: 0 1;
+        text-style: bold;
+    }
     """
     
     BINDINGS = [
@@ -7626,7 +7867,6 @@ class TodoApp(App):
         Binding("o", "sort_tasks", "Ordenar"),
         Binding("g", "new_group", "Nuevo Grupo"),
         Binding("G", "group_options", "Opc. Grupo"),
-        Binding("T", "manage_tags", "Etiquetas"),
         Binding("c", "toggle_calendar", "Calendario"),
         Binding("i", "today_tasks", "Hoy"),
         Binding("/", "search", "Buscar"),
@@ -7643,7 +7883,6 @@ class TodoApp(App):
         Binding("j", "nav_down", show=False),
         Binding("n", "next_month", "Mes sig.", show=False),
         Binding("p", "prev_month", "Mes ant.", show=False),
-        Binding("t", "go_today", show=False),
         Binding("space", "toggle_done", "Completar"),
         Binding("enter", "action_enter", show=False),
         Binding("q", "quit", "Salir"),
@@ -7674,6 +7913,7 @@ class TodoApp(App):
         self.NOTES_GROUP_ID = -2
         self.CANVAS_GROUP_ID = -3
         self.AUDIO_GROUP_ID = -4
+        self.TAGS_GROUP_ID = -5
         self.current_group_id: Optional[int] = self.GENERAL_GROUP_ID
         self.data_file = Path.home() / "todo" / "todo_tasks.json"
         self.data_file.parent.mkdir(exist_ok=True)
@@ -7798,7 +8038,34 @@ class TodoApp(App):
     
     async def refresh_tabs(self) -> None:
         tabs = self.query_one("#tabs-container", Horizontal)
-        await tabs.remove_children()
+        
+        existing_tabs = {t.id: t for t in tabs.query(GroupTab) if t.id}
+        if self.calendar_mode:
+            expected_ids = ["tab-calendar"]
+        else:
+            expected_ids = ["tab-general", "tab-all", "tab-notes", "tab-canvas", "tab-audio", "tab-tags"] + [f"tab-{g.id}" for g in self.groups]
+
+        if list(existing_tabs.keys()) == expected_ids:
+            if self.calendar_mode:
+                existing_tabs["tab-calendar"].active = True
+            else:
+                existing_tabs["tab-general"].active = (self.current_group_id == self.GENERAL_GROUP_ID)
+                existing_tabs["tab-all"].active = (self.current_group_id is None)
+                existing_tabs["tab-notes"].active = (self.current_group_id == self.NOTES_GROUP_ID)
+                existing_tabs["tab-canvas"].active = (self.current_group_id == self.CANVAS_GROUP_ID)
+                existing_tabs["tab-audio"].active = (self.current_group_id == self.AUDIO_GROUP_ID)
+                existing_tabs["tab-tags"].active = (self.current_group_id == self.TAGS_GROUP_ID)
+                for g in self.groups:
+                    t = existing_tabs.get(f"tab-{g.id}")
+                    if t:
+                        icon = "📂" if self.current_group_id == g.id else "📁"
+                        t.update(f"{icon} {g.name}")
+                        t.active = (self.current_group_id == g.id)
+            return
+
+        for child in list(tabs.children):
+            child.id = None
+            await child.remove()
         
         if self.calendar_mode:
             tab = GroupTab(None, "📅 Calendario", id="tab-calendar")
@@ -7824,6 +8091,10 @@ class TodoApp(App):
             tab = GroupTab(self.AUDIO_GROUP_ID, "🎤 Audios", id="tab-audio")
             await tabs.mount(tab)
             tab.active = (self.current_group_id == self.AUDIO_GROUP_ID)
+
+            tab = GroupTab(self.TAGS_GROUP_ID, "🏷️ Etiquetas", id="tab-tags")
+            await tabs.mount(tab)
+            tab.active = (self.current_group_id == self.TAGS_GROUP_ID)
 
             for g in self.groups:
                 icon = "📂" if self.current_group_id == g.id else "📁"
@@ -7908,12 +8179,16 @@ class TodoApp(App):
             calendar_view.remove_class("visible")
             calendar_view.styles.display = "none"
             await task_list.remove_children()
-            if self.current_group_id == self.NOTES_GROUP_ID:
+            if self.current_group_id == self.GENERAL_GROUP_ID:
+                await self._refresh_general_view(task_list)
+            elif self.current_group_id == self.NOTES_GROUP_ID:
                 await self._refresh_notes_list(task_list)
             elif self.current_group_id == self.CANVAS_GROUP_ID:
                 await self._refresh_canvas_list(task_list)
             elif self.current_group_id == self.AUDIO_GROUP_ID:
                 await self._refresh_voice_notes_list(task_list)
+            elif self.current_group_id == self.TAGS_GROUP_ID:
+                await self._refresh_tags_list(task_list)
             else:
                 await self._refresh_task_list(task_list)
 
@@ -7924,7 +8199,12 @@ class TodoApp(App):
             msg = "No hay notas de voz. Pulsa 'a' para añadir/grabar una."
             await task_list.mount(Label(msg, id="empty-message"))
         else:
+            seen_ids = set()
             for vn in filtered_vn:
+                if vn.id in seen_ids:
+                    vn.id = max([v.id for v in self.voice_notes], default=0) + 1
+                    self.next_voice_note_id = max(self.next_voice_note_id, vn.id + 1)
+                seen_ids.add(vn.id)
                 w = VoiceNoteWidget(vn, all_tags=self.tags, id=f"vn-{vn.id}")
                 await task_list.mount(w)
 
@@ -7951,12 +8231,22 @@ class TodoApp(App):
         for idx, vn in enumerate(vn_list):
             try:
                 widget = self.query_one(f"#vn-{vn.id}", VoiceNoteWidget)
-                widget.selected = (idx == self.selected_index)
+                is_sel = (idx == self.selected_index)
+                widget.selected = is_sel
+                if is_sel:
+                    widget.scroll_visible()
             except Exception:
                 pass
     
     async def _refresh_task_list(self, task_list: Container) -> None:
         ordered = self._get_ordered_tasks()
+        seen_ids = set()
+        for t in ordered:
+            if t.id in seen_ids:
+                t.id = max([tk.id for tk in self.tasks], default=0) + 1
+                self.next_task_id = max(self.next_task_id, t.id + 1)
+            seen_ids.add(t.id)
+
         pending = [t for t in ordered if not t.done]
         completed = [t for t in ordered if t.done]
         
@@ -7982,7 +8272,12 @@ class TodoApp(App):
             msg = "No hay notas. Pulsa 'a' para añadir una."
             await task_list.mount(Label(msg, id="empty-message"))
         else:
+            seen_ids = set()
             for note in filtered_notes:
+                if note.id in seen_ids:
+                    note.id = max([n.id for n in self.notes], default=0) + 1
+                    self.next_note_id = max(self.next_note_id, note.id + 1)
+                seen_ids.add(note.id)
                 w = NoteWidget(note, all_tags=self.tags, id=f"note-{note.id}")
                 await task_list.mount(w)
 
@@ -8007,8 +8302,14 @@ class TodoApp(App):
             self.selected_index = 0
 
         for idx, note in enumerate(notes):
-            widget = self.query_one(f"#note-{note.id}", NoteWidget)
-            widget.selected = (idx == self.selected_index)
+            try:
+                widget = self.query_one(f"#note-{note.id}", NoteWidget)
+                is_sel = (idx == self.selected_index)
+                widget.selected = is_sel
+                if is_sel:
+                    widget.scroll_visible()
+            except Exception:
+                pass
 
     async def _refresh_canvas_list(self, task_list: Container) -> None:
         filtered_canvas = self._get_filtered_canvas()
@@ -8017,14 +8318,21 @@ class TodoApp(App):
             msg = "No hay pizarras. Pulsa 'a' para añadir una."
             await task_list.mount(Label(msg, id="empty-message"))
         else:
+            seen_ids = set()
             for canvas in filtered_canvas:
-                w = CanvasWidget(canvas, id=f"canvas-{canvas.id}")
+                if canvas.id in seen_ids:
+                    canvas.id = max([c.id for c in self.canvas_list], default=0) + 1
+                    self.next_canvas_id = max(self.next_canvas_id, canvas.id + 1)
+                seen_ids.add(canvas.id)
+                w = CanvasWidget(canvas, all_tags=self.tags, id=f"canvas-{canvas.id}")
                 await task_list.mount(w)
 
         self._update_selection_canvas(filtered_canvas)
 
     def _get_filtered_canvas(self) -> list[Canvas]:
         canvas_list = list(self.canvas_list)
+        if self.filter_tag_ids:
+            canvas_list = [c for c in canvas_list if any(tag_id in c.tags for tag_id in self.filter_tag_ids)]
         canvas_list.sort(key=lambda c: c.created_at, reverse=True)
         return canvas_list
 
@@ -8038,8 +8346,14 @@ class TodoApp(App):
             self.selected_index = 0
 
         for idx, canvas in enumerate(canvas_list):
-            widget = self.query_one(f"#canvas-{canvas.id}", CanvasWidget)
-            widget.selected = (idx == self.selected_index)
+            try:
+                widget = self.query_one(f"#canvas-{canvas.id}", CanvasWidget)
+                is_sel = (idx == self.selected_index)
+                widget.selected = is_sel
+                if is_sel:
+                    widget.scroll_visible()
+            except Exception:
+                pass
 
     def refresh_calendar(self) -> None:
         self.query_one("#calendar-header", Static).update(f"{MESES[self.cal_month]} {self.cal_year}")
@@ -8353,10 +8667,44 @@ class TodoApp(App):
             self.cal_year, self.cal_month, self.cal_day = d.year, d.month, d.day
             self.refresh_calendar()
             self.update_stats()
-        else:
-            if self._get_ordered_tasks() and self.selected_index > 0:
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            items = self._get_general_items_list()
+            if items:
+                if self.selected_index > 0:
+                    self.selected_index -= 1
+                    self._update_selection_general(items)
+                else:
+                    try:
+                        self.query_one("#task-list", Container).scroll_home()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    self.query_one("#task-list", Container).scroll_up()
+                except Exception:
+                    pass
+        elif self.current_group_id == self.NOTES_GROUP_ID:
+            notes = self._get_filtered_notes()
+            if notes and self.selected_index > 0:
                 self.selected_index -= 1
-                self.update_selection()
+                self._update_selection_notes(notes)
+        elif self.current_group_id == self.CANVAS_GROUP_ID:
+            canvas_list = self._get_filtered_canvas()
+            if canvas_list and self.selected_index > 0:
+                self.selected_index -= 1
+                self._update_selection_canvas(canvas_list)
+        elif self.current_group_id == self.AUDIO_GROUP_ID:
+            vn_list = self._get_filtered_voice_notes()
+            if vn_list and self.selected_index > 0:
+                self.selected_index -= 1
+                self._update_selection_voice_notes(vn_list)
+        else:
+            ordered = self._get_ordered_tasks()
+            if ordered and self.selected_index > 0:
+                self.selected_index -= 1
+                pending = [t for t in ordered if not t.done]
+                completed = [t for t in ordered if t.done]
+                self._update_selection(pending, completed)
     
     async def action_nav_down(self) -> None:
         if self.calendar_mode:
@@ -8364,11 +8712,330 @@ class TodoApp(App):
             self.cal_year, self.cal_month, self.cal_day = d.year, d.month, d.day
             self.refresh_calendar()
             self.update_stats()
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            items = self._get_general_items_list()
+            if items:
+                if self.selected_index < len(items) - 1:
+                    self.selected_index += 1
+                    self._update_selection_general(items)
+                else:
+                    try:
+                        self.query_one("#task-list", Container).scroll_end()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    self.query_one("#task-list", Container).scroll_down()
+                except Exception:
+                    pass
+        elif self.current_group_id == self.TAGS_GROUP_ID:
+            tags = self._get_filtered_tags()
+            if tags:
+                if self.selected_index > 0:
+                    self.selected_index -= 1
+                    self._update_selection_tags(tags)
+                else:
+                    try:
+                        self.query_one("#task-list", Container).scroll_home()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    self.query_one("#task-list", Container).scroll_up()
+                except Exception:
+                    pass
+        elif self.current_group_id == self.NOTES_GROUP_ID:
+            notes = self._get_filtered_notes()
+            if notes and self.selected_index < len(notes) - 1:
+                self.selected_index += 1
+                self._update_selection_notes(notes)
+        elif self.current_group_id == self.CANVAS_GROUP_ID:
+            canvas_list = self._get_filtered_canvas()
+            if canvas_list and self.selected_index < len(canvas_list) - 1:
+                self.selected_index += 1
+                self._update_selection_canvas(canvas_list)
+        elif self.current_group_id == self.AUDIO_GROUP_ID:
+            vn_list = self._get_filtered_voice_notes()
+            if vn_list and self.selected_index < len(vn_list) - 1:
+                self.selected_index += 1
+                self._update_selection_voice_notes(vn_list)
         else:
             ordered = self._get_ordered_tasks()
             if ordered and self.selected_index < len(ordered) - 1:
                 self.selected_index += 1
-                self.update_selection()
+                pending = [t for t in ordered if not t.done]
+                completed = [t for t in ordered if t.done]
+                self._update_selection(pending, completed)
+
+    async def _refresh_general_view(self, task_list: Container) -> None:
+        items = []
+
+        # 1. Tareas
+        await task_list.mount(Static("── 📋 TAREAS ──", classes="section-separator-main"))
+        ordered_tasks = self._get_ordered_tasks()
+        pending = [t for t in ordered_tasks if not t.done]
+        completed = [t for t in ordered_tasks if t.done]
+
+        if not ordered_tasks:
+            await task_list.mount(Label(" (Sin tareas) ", classes="empty-section-label"))
+        else:
+            for t in pending:
+                w_id = f"task-{t.id}"
+                w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=w_id)
+                await task_list.mount(w)
+                items.append(("task", t, w_id))
+            if completed:
+                await task_list.mount(Static("── Completadas ──", id="completed-separator"))
+                for t in completed:
+                    w_id = f"task-{t.id}"
+                    w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=w_id)
+                    await task_list.mount(w)
+                    items.append(("task", t, w_id))
+
+        # 2. Notas
+        await task_list.mount(Static("── 📝 NOTAS ──", classes="section-separator-main"))
+        filtered_notes = self._get_filtered_notes()
+        if not filtered_notes:
+            await task_list.mount(Label(" (Sin notas) ", classes="empty-section-label"))
+        else:
+            seen_ids = set()
+            for note in filtered_notes:
+                if note.id in seen_ids:
+                    note.id = max([n.id for n in self.notes], default=0) + 1
+                    self.next_note_id = max(self.next_note_id, note.id + 1)
+                seen_ids.add(note.id)
+                w_id = f"note-{note.id}"
+                w = NoteWidget(note, all_tags=self.tags, id=w_id)
+                await task_list.mount(w)
+                items.append(("note", note, w_id))
+
+        # 3. Pizarras
+        await task_list.mount(Static("── 🎨 PIZARRAS ──", classes="section-separator-main"))
+        filtered_canvas = self._get_filtered_canvas()
+        if not filtered_canvas:
+            await task_list.mount(Label(" (Sin pizarras) ", classes="empty-section-label"))
+        else:
+            seen_ids = set()
+            for canvas in filtered_canvas:
+                if canvas.id in seen_ids:
+                    canvas.id = max([c.id for c in self.canvas_list], default=0) + 1
+                    self.next_canvas_id = max(self.next_canvas_id, canvas.id + 1)
+                seen_ids.add(canvas.id)
+                w_id = f"canvas-{canvas.id}"
+                w = CanvasWidget(canvas, all_tags=self.tags, id=w_id)
+                await task_list.mount(w)
+                items.append(("canvas", canvas, w_id))
+
+        # 4. Audios
+        await task_list.mount(Static("── 🎤 AUDIOS ──", classes="section-separator-main"))
+        filtered_vn = self._get_filtered_voice_notes()
+        if not filtered_vn:
+            await task_list.mount(Label(" (Sin audios) ", classes="empty-section-label"))
+        else:
+            seen_ids = set()
+            for vn in filtered_vn:
+                if vn.id in seen_ids:
+                    vn.id = max([v.id for v in self.voice_notes], default=0) + 1
+                    self.next_voice_note_id = max(self.next_voice_note_id, vn.id + 1)
+                seen_ids.add(vn.id)
+                w_id = f"vn-{vn.id}"
+                w = VoiceNoteWidget(vn, all_tags=self.tags, id=w_id)
+                await task_list.mount(w)
+                items.append(("voice_note", vn, w_id))
+
+        # 5. Etiquetas
+        await task_list.mount(Static("── 🏷️ ETIQUETAS ──", classes="section-separator-main"))
+        if not self.tags:
+            await task_list.mount(Label(" (Sin etiquetas) ", classes="empty-section-label"))
+        else:
+            for tag in self.tags:
+                count = sum(1 for t in self.tasks if tag.id in t.tags)
+                w_id = f"tag-{tag.id}"
+                w = TagWidget(tag, task_count=count, id=w_id)
+                await task_list.mount(w)
+                items.append(("tag", tag, w_id))
+
+        self._update_selection_general(items)
+
+    def _get_general_items_list(self) -> list:
+        items = []
+        ordered_tasks = self._get_ordered_tasks()
+        pending = [t for t in ordered_tasks if not t.done]
+        completed = [t for t in ordered_tasks if t.done]
+
+        for t in pending:
+            items.append(("task", t, f"task-{t.id}"))
+        for t in completed:
+            items.append(("task", t, f"task-{t.id}"))
+
+        for note in self._get_filtered_notes():
+            items.append(("note", note, f"note-{note.id}"))
+
+        for canvas in self._get_filtered_canvas():
+            items.append(("canvas", canvas, f"canvas-{canvas.id}"))
+
+        for vn in self._get_filtered_voice_notes():
+            items.append(("voice_note", vn, f"vn-{vn.id}"))
+
+        for tag in self._get_filtered_tags():
+            items.append(("tag", tag, f"tag-{tag.id}"))
+
+        return items
+
+    def _get_selected_general_item(self) -> Optional[tuple[str, Any]]:
+        items = self._get_general_items_list()
+        if items and 0 <= self.selected_index < len(items):
+            item_type, item_obj, _ = items[self.selected_index]
+            return item_type, item_obj
+        return None
+
+    def _update_selection_general(self, items: list = None) -> None:
+        if items is None:
+            items = self._get_general_items_list()
+        if not items:
+            self.selected_index = 0
+            return
+
+        if self.selected_index >= len(items):
+            self.selected_index = len(items) - 1
+        if self.selected_index < 0:
+            self.selected_index = 0
+
+        for idx, (item_type, item_obj, widget_id) in enumerate(items):
+            try:
+                if item_type == "task":
+                    w = self.query_one(f"#{widget_id}", TaskWidget)
+                elif item_type == "note":
+                    w = self.query_one(f"#{widget_id}", NoteWidget)
+                elif item_type == "canvas":
+                    w = self.query_one(f"#{widget_id}", CanvasWidget)
+                elif item_type == "voice_note":
+                    w = self.query_one(f"#{widget_id}", VoiceNoteWidget)
+                elif item_type == "tag":
+                    w = self.query_one(f"#{widget_id}", TagWidget)
+                else:
+                    continue
+                is_sel = (idx == self.selected_index)
+                w.selected = is_sel
+                if is_sel:
+                    if idx == len(items) - 1:
+                        self.query_one("#task-list", Container).scroll_end()
+                    elif idx == 0:
+                        self.query_one("#task-list", Container).scroll_home()
+                    else:
+                        w.scroll_visible()
+            except Exception:
+                pass
+
+    def _select_tag_by_data(self, tag: Tag) -> None:
+        if self.current_group_id == self.GENERAL_GROUP_ID:
+            items = self._get_general_items_list()
+            for idx, (itype, obj, _) in enumerate(items):
+                if itype == "tag" and obj == tag:
+                    self.selected_index = idx
+                    self._update_selection_general(items)
+                    break
+            return
+        tags = self._get_filtered_tags()
+        if tag in tags:
+            self.selected_index = tags.index(tag)
+            self._update_selection_tags(tags)
+
+    async def _refresh_tags_list(self, task_list: Container) -> None:
+        filtered_tags = self._get_filtered_tags()
+
+        if not filtered_tags:
+            msg = "No hay etiquetas. Pulsa 'a' para añadir una."
+            await task_list.mount(Label(msg, id="empty-message"))
+        else:
+            for tag in filtered_tags:
+                count = sum(1 for t in self.tasks if tag.id in t.tags)
+                w = TagWidget(tag, task_count=count, id=f"tag-{tag.id}")
+                await task_list.mount(w)
+
+        self._update_selection_tags(filtered_tags)
+
+    def _get_filtered_tags(self) -> list[Tag]:
+        return list(self.tags)
+
+    def _update_selection_tags(self, tags: list = None) -> None:
+        if tags is None:
+            tags = self._get_filtered_tags()
+        if not tags:
+            return
+
+        if self.selected_index >= len(tags):
+            self.selected_index = len(tags) - 1
+        if self.selected_index < 0:
+            self.selected_index = 0
+
+        for idx, tag in enumerate(tags):
+            try:
+                widget = self.query_one(f"#tag-{tag.id}", TagWidget)
+                is_sel = (idx == self.selected_index)
+                widget.selected = is_sel
+                if is_sel:
+                    widget.scroll_visible()
+            except Exception:
+                pass
+
+    def _select_note_by_data(self, note: Note) -> None:
+        if self.current_group_id == self.GENERAL_GROUP_ID:
+            items = self._get_general_items_list()
+            for idx, (itype, obj, _) in enumerate(items):
+                if itype == "note" and obj == note:
+                    self.selected_index = idx
+                    self._update_selection_general(items)
+                    break
+            return
+        notes = self._get_filtered_notes()
+        if note in notes:
+            self.selected_index = notes.index(note)
+            self._update_selection_notes(notes)
+
+    def _select_voice_note_by_data(self, vn: VoiceNote) -> None:
+        if self.current_group_id == self.GENERAL_GROUP_ID:
+            items = self._get_general_items_list()
+            for idx, (itype, obj, _) in enumerate(items):
+                if itype == "voice_note" and obj == vn:
+                    self.selected_index = idx
+                    self._update_selection_general(items)
+                    break
+            return
+        vn_list = self._get_filtered_voice_notes()
+        if vn in vn_list:
+            self.selected_index = vn_list.index(vn)
+            self._update_selection_voice_notes(vn_list)
+
+    def _select_canvas_by_data(self, canvas: Canvas) -> None:
+        if self.current_group_id == self.GENERAL_GROUP_ID:
+            items = self._get_general_items_list()
+            for idx, (itype, obj, _) in enumerate(items):
+                if itype == "canvas" and obj == canvas:
+                    self.selected_index = idx
+                    self._update_selection_general(items)
+                    break
+            return
+        canvas_list = self._get_filtered_canvas()
+        if canvas in canvas_list:
+            self.selected_index = canvas_list.index(canvas)
+            self._update_selection_canvas(canvas_list)
+
+    def _select_task_by_data(self, task: Task) -> None:
+        if self.current_group_id == self.GENERAL_GROUP_ID:
+            items = self._get_general_items_list()
+            for idx, (itype, obj, _) in enumerate(items):
+                if itype == "task" and obj == task:
+                    self.selected_index = idx
+                    self._update_selection_general(items)
+                    break
+            return
+        ordered = self._get_ordered_tasks()
+        if task in ordered:
+            self.selected_index = ordered.index(task)
+            pending = [t for t in ordered if not t.done]
+            completed = [t for t in ordered if t.done]
+            self._update_selection(pending, completed)
     
     def action_next_month(self) -> None:
         if self.calendar_mode:
@@ -8404,12 +9071,12 @@ class TodoApp(App):
         self.update_stats()
 
     async def _prev_group(self) -> None:
-        ids = [self.GENERAL_GROUP_ID, None, self.NOTES_GROUP_ID, self.CANVAS_GROUP_ID, self.AUDIO_GROUP_ID] + [g.id for g in self.groups]
+        ids = [self.GENERAL_GROUP_ID, None, self.NOTES_GROUP_ID, self.CANVAS_GROUP_ID, self.AUDIO_GROUP_ID, self.TAGS_GROUP_ID] + [g.id for g in self.groups]
         idx = (ids.index(self.current_group_id) - 1) % len(ids)
         await self._select_group_by_id(ids[idx])
 
     async def _next_group(self) -> None:
-        ids = [self.GENERAL_GROUP_ID, None, self.NOTES_GROUP_ID, self.CANVAS_GROUP_ID, self.AUDIO_GROUP_ID] + [g.id for g in self.groups]
+        ids = [self.GENERAL_GROUP_ID, None, self.NOTES_GROUP_ID, self.CANVAS_GROUP_ID, self.AUDIO_GROUP_ID, self.TAGS_GROUP_ID] + [g.id for g in self.groups]
         idx = (ids.index(self.current_group_id) + 1) % len(ids)
         await self._select_group_by_id(ids[idx])
         
@@ -8433,6 +9100,18 @@ class TodoApp(App):
                     self._go_to_task(item_obj)
 
             self.push_screen(DayItemsModal(tasks, subtasks, date_str), on_result)
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item:
+                itype, obj = item
+                if itype == "note":
+                    self.action_view_note(obj)
+                elif itype == "canvas":
+                    self.action_edit_canvas(obj)
+                elif itype == "voice_note":
+                    self.action_play_voice_note(obj)
+                elif itype == "task":
+                    self.action_toggle_done()
         elif self.current_group_id == self.NOTES_GROUP_ID:
             self.action_view_note()
         elif self.current_group_id == self.CANVAS_GROUP_ID:
@@ -8779,6 +9458,10 @@ class TodoApp(App):
             self.action_add_voice_note()
             return
 
+        if self.current_group_id == self.TAGS_GROUP_ID:
+            self.action_add_tag()
+            return
+
         if self.current_group_id == self.GENERAL_GROUP_ID:
             self.notify("No se pueden crear tareas en General. Cambia a un grupo específico.", severity="error", timeout=3)
             return
@@ -8811,6 +9494,27 @@ class TodoApp(App):
         if self.current_group_id == self.AUDIO_GROUP_ID:
             self.action_edit_voice_note()
             return
+
+        if self.current_group_id == self.TAGS_GROUP_ID:
+            self.action_edit_tag()
+            return
+
+        if self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item:
+                itype, obj = item
+                if itype == "note":
+                    self.action_edit_note(obj)
+                    return
+                elif itype == "canvas":
+                    self.action_edit_canvas(obj)
+                    return
+                elif itype == "voice_note":
+                    self.action_edit_voice_note(obj)
+                    return
+                elif itype == "tag":
+                    self.action_edit_tag(obj)
+                    return
 
         w = self.get_selected_widget()
         if not w: return
@@ -8888,6 +9592,27 @@ class TodoApp(App):
             self.action_delete_voice_note()
             return
 
+        if self.current_group_id == self.TAGS_GROUP_ID:
+            self.action_delete_tag()
+            return
+
+        if self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item:
+                itype, obj = item
+                if itype == "note":
+                    self.action_delete_note(obj)
+                    return
+                elif itype == "canvas":
+                    self.action_delete_canvas(obj)
+                    return
+                elif itype == "voice_note":
+                    self.action_delete_voice_note(obj)
+                    return
+                elif itype == "tag":
+                    self.action_delete_tag(obj)
+                    return
+
         ordered = self._get_ordered_tasks()
         if not ordered: return
         t = ordered[self.selected_index]
@@ -8914,24 +9639,26 @@ class TodoApp(App):
         async def on_result(result: Optional[dict]) -> None:
             if result:
                 self._save_undo_state()
+                new_id = max([v.id for v in self.voice_notes], default=0) + 1
+                self.next_voice_note_id = max(self.next_voice_note_id, new_id + 1)
                 vn = VoiceNote(
-                    id=self.next_voice_note_id,
+                    id=new_id,
                     title=result["title"],
                     audio_path=result.get("audio_path", ""),
                     description=result.get("description", ""),
                     duration=result.get("duration", 0.0),
                     tags=result.get("tags", [])
                 )
-                self.next_voice_note_id += 1
                 self.voice_notes.append(vn)
 
-                target_task_id = result.get("target_task_id")
-                if target_task_id:
+                target_task_ids = result.get("target_task_ids", [])
+                for target_task_id in target_task_ids:
                     task = next((t for t in self.tasks if t.id == target_task_id), None)
                     if task:
                         if not any(v.id == vn.id for v in task.voice_notes):
                             task.voice_notes.append(vn)
-                        self.notify(f"📌 Vinculada a tarea '{task.text[:20]}'", severity="information", timeout=3)
+                if target_task_ids:
+                    self.notify(f"📌 Vinculada a {len(target_task_ids)} tarea(s)", severity="information", timeout=3)
 
                 self.selected_index = 0
                 await self.refresh_view()
@@ -8942,11 +9669,18 @@ class TodoApp(App):
         modal = VoiceNoteEditModal(modal_title="🎤 Nueva Nota de Voz", all_tags=self.tags)
         self.push_screen(modal, on_result)
 
-    def action_edit_voice_note(self) -> None:
-        vns = self._get_filtered_voice_notes()
-        if not vns: return
-        vn = vns[self.selected_index]
-        associated_task = next((t for t in self.tasks if any(v.id == vn.id for v in t.voice_notes)), None)
+    def action_edit_voice_note(self, target_voice_note: VoiceNote = None) -> None:
+        if target_voice_note:
+            vn = target_voice_note
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item and item[0] == "voice_note": vn = item[1]
+            else: return
+        else:
+            vns = self._get_filtered_voice_notes()
+            if not vns or self.selected_index >= len(vns): return
+            vn = vns[self.selected_index]
+        associated_task_ids = [t.id for t in self.tasks if any(v.id == vn.id for v in t.voice_notes)]
 
         async def on_result(result: Optional[dict]) -> None:
             if result:
@@ -8960,12 +9694,13 @@ class TodoApp(App):
                 for t in self.tasks:
                     t.voice_notes = [v for v in t.voice_notes if v.id != vn.id]
 
-                target_task_id = result.get("target_task_id")
-                if target_task_id:
+                target_task_ids = result.get("target_task_ids", [])
+                for target_task_id in target_task_ids:
                     task = next((t for t in self.tasks if t.id == target_task_id), None)
                     if task:
                         task.voice_notes.append(vn)
-                        self.notify(f"📌 Vinculada a tarea '{task.text[:20]}'", severity="information", timeout=3)
+                if target_task_ids:
+                    self.notify(f"📌 Vinculada a {len(target_task_ids)} tarea(s)", severity="information", timeout=3)
 
                 await self.refresh_view()
                 self.update_stats()
@@ -8979,15 +9714,23 @@ class TodoApp(App):
             initial_audio=vn.audio_path,
             initial_duration=vn.duration,
             all_tags=self.tags,
-            selected_tag_ids=vn.tags
+            selected_tag_ids=vn.tags,
+            selected_tasks=associated_task_ids
         )
-        modal.selected_task = associated_task
+        modal.selected_tasks = associated_task_ids
         self.push_screen(modal, on_result)
 
-    def action_delete_voice_note(self) -> None:
-        vns = self._get_filtered_voice_notes()
-        if not vns: return
-        vn = vns[self.selected_index]
+    def action_delete_voice_note(self, target_voice_note: VoiceNote = None) -> None:
+        if target_voice_note:
+            vn = target_voice_note
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item and item[0] == "voice_note": vn = item[1]
+            else: return
+        else:
+            vns = self._get_filtered_voice_notes()
+            if not vns or self.selected_index >= len(vns): return
+            vn = vns[self.selected_index]
 
         async def on_confirm(yes: bool) -> None:
             if yes:
@@ -9008,18 +9751,27 @@ class TodoApp(App):
         txt = vn.title[:30] + "..." if len(vn.title) > 30 else vn.title
         self.push_screen(ConfirmModal(f"¿Eliminar nota de voz '{txt}'?"), on_confirm)
 
-    def action_play_voice_note(self) -> None:
-        vns = self._get_filtered_voice_notes()
-        if not vns: return
-        vn = vns[self.selected_index]
+    def action_play_voice_note(self, target_voice_note: VoiceNote = None) -> None:
+        if target_voice_note:
+            vn = target_voice_note
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item and item[0] == "voice_note": vn = item[1]
+            else: return
+        else:
+            vns = self._get_filtered_voice_notes()
+            if not vns or self.selected_index >= len(vns): return
+            vn = vns[self.selected_index]
         self.push_screen(AudioPlayerModal(vn.title, vn.audio_path))
 
     def action_add_note(self) -> None:
         async def on_result(result: Optional[dict]) -> None:
             if result:
                 self._save_undo_state()
+                new_id = max([n.id for n in self.notes], default=0) + 1
+                self.next_note_id = max(self.next_note_id, new_id + 1)
                 note = Note(
-                    id=self.next_note_id,
+                    id=new_id,
                     title=result["title"],
                     description=result.get("description", ""),
                     url=result.get("url"),
@@ -9027,16 +9779,16 @@ class TodoApp(App):
                     file_path=result.get("file_path"),
                     tags=result.get("tags", [])
                 )
-                self.next_note_id += 1
                 self.notes.append(note)
 
-                target_task_id = result.get("target_task_id")
-                if target_task_id:
+                target_task_ids = result.get("target_task_ids", [])
+                for target_task_id in target_task_ids:
                     task = next((t for t in self.tasks if t.id == target_task_id), None)
                     if task:
                         if not any(n.id == note.id for n in task.notes):
                             task.notes.append(note)
-                        self.notify(f"📌 Vinculada a tarea '{task.text[:20]}'", severity="information", timeout=3)
+                if target_task_ids:
+                    self.notify(f"📌 Vinculada a {len(target_task_ids)} tarea(s)", severity="information", timeout=3)
 
                 self.selected_index = 0
                 await self.refresh_view()
@@ -9047,11 +9799,18 @@ class TodoApp(App):
         modal = NoteEditModal(modal_title="📝 Nueva Nota", all_tags=self.tags)
         self.push_screen(modal, on_result)
 
-    def action_edit_note(self) -> None:
-        notes = self._get_filtered_notes()
-        if not notes: return
-        note = notes[self.selected_index]
-        associated_task = next((t for t in self.tasks if any(n.id == note.id for n in t.notes)), None)
+    def action_edit_note(self, target_note: Note = None) -> None:
+        if target_note:
+            note = target_note
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item and item[0] == "note": note = item[1]
+            else: return
+        else:
+            notes = self._get_filtered_notes()
+            if not notes or self.selected_index >= len(notes): return
+            note = notes[self.selected_index]
+        associated_task_ids = [t.id for t in self.tasks if any(n.id == note.id for n in t.notes)]
 
         async def on_result(result: Optional[dict]) -> None:
             if result:
@@ -9066,12 +9825,13 @@ class TodoApp(App):
                 for t in self.tasks:
                     t.notes = [n for n in t.notes if n.id != note.id]
 
-                target_task_id = result.get("target_task_id")
-                if target_task_id:
+                target_task_ids = result.get("target_task_ids", [])
+                for target_task_id in target_task_ids:
                     task = next((t for t in self.tasks if t.id == target_task_id), None)
                     if task:
                         task.notes.append(note)
-                        self.notify(f"📌 Vinculada a tarea '{task.text[:20]}'", severity="information", timeout=3)
+                if target_task_ids:
+                    self.notify(f"📌 Vinculada a {len(target_task_ids)} tarea(s)", severity="information", timeout=3)
 
                 await self.refresh_view()
                 self.update_stats()
@@ -9088,13 +9848,20 @@ class TodoApp(App):
             all_tags=self.tags,
             selected_tag_ids=note.tags
         )
-        modal.selected_task = associated_task
+        modal.selected_tasks = associated_task_ids
         self.push_screen(modal, on_result)
 
-    def action_delete_note(self) -> None:
-        notes = self._get_filtered_notes()
-        if not notes: return
-        note = notes[self.selected_index]
+    def action_delete_note(self, target_note: Note = None) -> None:
+        if target_note:
+            note = target_note
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item and item[0] == "note": note = item[1]
+            else: return
+        else:
+            notes = self._get_filtered_notes()
+            if not notes or self.selected_index >= len(notes): return
+            note = notes[self.selected_index]
 
         async def on_confirm(yes: bool) -> None:
             if yes:
@@ -9112,10 +9879,17 @@ class TodoApp(App):
         txt = note.title[:30] + "..." if len(note.title) > 30 else note.title
         self.push_screen(ConfirmModal(f"¿Eliminar '{txt}'?"), on_confirm)
 
-    def action_view_note(self) -> None:
-        notes = self._get_filtered_notes()
-        if not notes: return
-        note = notes[self.selected_index]
+    def action_view_note(self, target_note: Note = None) -> None:
+        if target_note:
+            note = target_note
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item and item[0] == "note": note = item[1]
+            else: return
+        else:
+            notes = self._get_filtered_notes()
+            if not notes or self.selected_index >= len(notes): return
+            note = notes[self.selected_index]
 
         content_lines = []
         content_lines.append(f"[bold]{note.title}[/bold]")
@@ -9164,27 +9938,49 @@ class TodoApp(App):
         async def on_result(result: Optional[dict]) -> None:
             if result:
                 self._save_undo_state()
+                new_id = max([c.id for c in self.canvas_list], default=0) + 1
+                self.next_canvas_id = max(self.next_canvas_id, new_id + 1)
                 canvas = Canvas(
-                    id=self.next_canvas_id,
+                    id=new_id,
                     title=result["title"],
                     width=result["width"],
                     height=result["height"],
-                    grid=result["grid"]
+                    grid=result["grid"],
+                    tags=result.get("tags", [])
                 )
-                self.next_canvas_id += 1
                 self.canvas_list.append(canvas)
+
+                target_task_ids = result.get("target_task_ids", [])
+                for target_task_id in target_task_ids:
+                    task = next((t for t in self.tasks if t.id == target_task_id), None)
+                    if task:
+                        if task.canvas_list is None: task.canvas_list = []
+                        if not any(c.id == canvas.id for c in task.canvas_list):
+                            task.canvas_list.append(canvas)
+                if target_task_ids:
+                    self.notify(f"📌 Vinculada a {len(target_task_ids)} tarea(s)", severity="information", timeout=3)
+
                 self.selected_index = 0
                 await self.refresh_view()
                 self.update_stats()
                 self.save_data()
                 self.notify("✅ Pizarra creada (Ctrl+Z para deshacer)", severity="information", timeout=2)
 
-        self.push_screen(CanvasEditorModal(), on_result)
+        self.push_screen(CanvasEditorModal(all_tags=self.tags), on_result)
 
-    def action_edit_canvas(self) -> None:
-        canvas_list = self._get_filtered_canvas()
-        if not canvas_list: return
-        canvas = canvas_list[self.selected_index]
+    def action_edit_canvas(self, target_canvas: Canvas = None) -> None:
+        if target_canvas:
+            canvas = target_canvas
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item and item[0] == "canvas": canvas = item[1]
+            else: return
+        else:
+            canvas_list = self._get_filtered_canvas()
+            if not canvas_list or self.selected_index >= len(canvas_list): return
+            canvas = canvas_list[self.selected_index]
+
+        associated_task_ids = [t.id for t in self.tasks if t.canvas_list and any(c.id == canvas.id for c in t.canvas_list)]
 
         async def on_result(result: Optional[dict]) -> None:
             if result:
@@ -9193,17 +9989,35 @@ class TodoApp(App):
                 canvas.width = result["width"]
                 canvas.height = result["height"]
                 canvas.grid = result["grid"]
+                canvas.tags = result.get("tags", [])
+
+                target_task_ids = result.get("target_task_ids", [])
+                for task in self.tasks:
+                    if task.canvas_list is None: task.canvas_list = []
+                    if task.id in target_task_ids:
+                        if not any(c.id == canvas.id for c in task.canvas_list):
+                            task.canvas_list.append(canvas)
+                    else:
+                        task.canvas_list = [c for c in task.canvas_list if c.id != canvas.id]
+
                 await self.refresh_view()
                 self.update_stats()
                 self.save_data()
                 self.notify("✅ Pizarra actualizada (Ctrl+Z para deshacer)", severity="information", timeout=2)
 
-        self.push_screen(CanvasEditorModal(canvas_data=canvas), on_result)
+        self.push_screen(CanvasEditorModal(canvas_data=canvas, all_tags=self.tags, selected_tag_ids=canvas.tags, selected_task_ids=associated_task_ids), on_result)
 
-    def action_delete_canvas(self) -> None:
-        canvas_list = self._get_filtered_canvas()
-        if not canvas_list: return
-        canvas = canvas_list[self.selected_index]
+    def action_delete_canvas(self, target_canvas: Canvas = None) -> None:
+        if target_canvas:
+            canvas = target_canvas
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item and item[0] == "canvas": canvas = item[1]
+            else: return
+        else:
+            canvas_list = self._get_filtered_canvas()
+            if not canvas_list or self.selected_index >= len(canvas_list): return
+            canvas = canvas_list[self.selected_index]
 
         async def on_confirm(yes: bool) -> None:
             if yes:
@@ -9231,7 +10045,7 @@ class TodoApp(App):
             "current_group_id": self.current_group_id,
             "selected_index": self.selected_index,
             "groups": [{"id": g.id, "name": g.name} for g in self.groups],
-            "tags": [{"id": t.id, "name": t.name} for t in self.tags],
+            "tags": [{"id": t.id, "name": t.name, "created_at": t.created_at} for t in self.tags],
             "notes": [{
                 "id": n.id,
                 "title": n.title,
@@ -9516,7 +10330,7 @@ class TodoApp(App):
                 "next_canvas_id": self.next_canvas_id,
                 "next_voice_note_id": self.next_voice_note_id,
                 "groups": [{"id": g.id, "name": g.name} for g in self.groups],
-                "tags": [{"id": t.id, "name": t.name} for t in self.tags],
+                "tags": [{"id": t.id, "name": t.name, "created_at": t.created_at} for t in self.tags],
                 "notes": [{
                     "id": n.id,
                     "title": n.title,
@@ -9623,7 +10437,7 @@ class TodoApp(App):
                 self.next_canvas_id = data.get("next_canvas_id", 1)
                 self.next_voice_note_id = data.get("next_voice_note_id", 1)
                 self.groups = [Group(id=g["id"], name=g["name"]) for g in data.get("groups", [])]
-                self.tags = [Tag(id=t["id"], name=t["name"]) for t in data.get("tags", [])]
+                self.tags = [Tag(id=t["id"], name=t["name"], created_at=t.get("created_at", "")) for t in data.get("tags", [])]
                 self.notes = [Note(
                     id=n["id"],
                     title=n.get("title", ""),
@@ -9640,7 +10454,8 @@ class TodoApp(App):
                     width=c.get("width", 50),
                     height=c.get("height", 20),
                     grid=c.get("grid", [[" " for _ in range(c.get("width", 50))] for _ in range(c.get("height", 20))]),
-                    created_at=c.get("created_at", "")
+                    created_at=c.get("created_at", ""),
+                    tags=c.get("tags", [])
                 ) for c in data.get("canvas", [])]
                 self.voice_notes = [VoiceNote(
                     id=v["id"],
@@ -9831,6 +10646,76 @@ class TodoApp(App):
             on_confirm
         )
     
+    def action_add_tag(self) -> None:
+        async def on_result(name: Optional[str]) -> None:
+            if name:
+                self._save_undo_state()
+                new_id = max([t.id for t in self.tags], default=0) + 1
+                self.next_tag_id = max(self.next_tag_id, new_id + 1)
+                tag = Tag(id=new_id, name=name)
+                self.tags.append(tag)
+                self.save_data()
+                await self.refresh_view()
+                self.notify("✅ Etiqueta creada (Ctrl+Z para deshacer)", severity="information", timeout=2)
+
+        self.push_screen(InputModal("Nueva Etiqueta", placeholder="Nombre de la etiqueta..."), on_result)
+
+    def action_edit_tag(self, target_tag: Tag = None) -> None:
+        if target_tag:
+            tag = target_tag
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item and item[0] == "tag": tag = item[1]
+            else: return
+        elif self.current_group_id == self.TAGS_GROUP_ID:
+            tags = self._get_filtered_tags()
+            if not tags or self.selected_index >= len(tags): return
+            tag = tags[self.selected_index]
+        else:
+            return
+
+        async def on_result(name: Optional[str]) -> None:
+            if name:
+                self._save_undo_state()
+                tag.name = name
+                self.save_data()
+                await self.refresh_view()
+                self.notify("✅ Etiqueta actualizada (Ctrl+Z para deshacer)", severity="information", timeout=2)
+
+        self.push_screen(InputModal("Editar Etiqueta", initial_text=tag.name), on_result)
+
+    def action_delete_tag(self, target_tag: Tag = None) -> None:
+        if target_tag:
+            tag = target_tag
+        elif self.current_group_id == self.GENERAL_GROUP_ID:
+            item = self._get_selected_general_item()
+            if item and item[0] == "tag": tag = item[1]
+            else: return
+        elif self.current_group_id == self.TAGS_GROUP_ID:
+            tags = self._get_filtered_tags()
+            if not tags or self.selected_index >= len(tags): return
+            tag = tags[self.selected_index]
+        else:
+            return
+
+        async def on_confirm(yes: bool) -> None:
+            if yes:
+                self._save_undo_state()
+                self.tags.remove(tag)
+                for t in self.tasks:
+                    if tag.id in t.tags: t.tags.remove(tag.id)
+                for n in self.notes:
+                    if tag.id in n.tags: n.tags.remove(tag.id)
+                for v in self.voice_notes:
+                    if tag.id in v.tags: v.tags.remove(tag.id)
+                for c in self.canvas_list:
+                    if tag.id in c.tags: c.tags.remove(tag.id)
+                self.save_data()
+                await self.refresh_view()
+                self.notify("🗑️ Etiqueta eliminada (Ctrl+Z para deshacer)", severity="information", timeout=2)
+
+        self.push_screen(ConfirmModal(f"¿Eliminar etiqueta '{tag.name}'?"), on_confirm)
+
     def on_key(self, event) -> None:
         key = event.key
         if key in ["up", "down", "left", "right"]:
