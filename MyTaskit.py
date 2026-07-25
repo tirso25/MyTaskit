@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional, Any
 from threading import Lock
 import json
+import re
 import random
 import time
 from pathlib import Path
@@ -628,11 +629,12 @@ class AudioPlayer:
 class Canvas:
     id: int
     title: str
-    width: int = 50
-    height: int = 20
+    width: int = 100
+    height: int = 40
     grid: list = None
     created_at: str = ""
     tags: list = None
+    pixel_mode: str = "half"
 
     def __post_init__(self):
         if not self.created_at:
@@ -641,6 +643,9 @@ class Canvas:
             self.grid = [[" " for _ in range(self.width)] for _ in range(self.height)]
         if self.tags is None:
             self.tags = []
+        if self.height % 2:
+            self.grid.append([" "] * self.width)
+            self.height += 1
 
 @dataclass
 class Task:
@@ -2489,6 +2494,32 @@ def format_datetime_display(dt_str: str) -> str:
     return dt_str
 
 
+_MARKUP_RE = re.compile(r"^\[([A-Za-z0-9_#]+)\]")
+
+def cell_color(cell) -> Optional[str]:
+    if not cell or cell == " ":
+        return None
+    m = _MARKUP_RE.match(cell)
+    return m.group(1) if m else cell
+
+def upgrade_canvas(c: "Canvas") -> "Canvas":
+    if getattr(c, "pixel_mode", None) == "half":
+        return c
+    new_grid = []
+    for row in (c.grid or []):
+        new_row = []
+        for cell in row:
+            col = cell_color(cell) or " "
+            new_row.extend([col, col])
+        new_grid.append(new_row)
+        new_grid.append(list(new_row))
+    c.grid = new_grid
+    c.width = len(new_grid[0]) if new_grid else 100
+    c.height = len(new_grid)
+    c.pixel_mode = "half"
+    return c
+
+
 class NoteWidget(Static):
     DEFAULT_CSS = """
     NoteWidget {
@@ -2662,7 +2693,7 @@ class CanvasWidget(Static):
                     yield Label(f" {tag_name} ", classes="tag")
                     yield Label(" ", classes="tag-separator")
 
-        size_str = f"{self.canvas_data.width}x{self.canvas_data.height}"
+        size_str = f"{self.canvas_data.width}x{self.canvas_data.height // 2}"
         yield Label(size_str, classes="canvas-size")
 
         yield Label(format_datetime_display(self.canvas_data.created_at), classes="canvas-time")
@@ -2735,7 +2766,7 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
     DEFAULT_CSS = """
     CanvasEditorModal { align: center middle; }
     CanvasEditorModal > VerticalScroll {
-        width: 90%; max-width: 120; height: 90%;
+        width: 95%; max-width: 130; height: 90%;
         border: thick $primary;
         background: $surface; padding: 1 2;
     }
@@ -2767,6 +2798,7 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
         padding: 0;
         margin-bottom: 1;
         background: #000000;
+        overflow-x: auto;
     }
     CanvasEditorModal #canvas-display {
         width: 100%;
@@ -2796,22 +2828,18 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
 
     def __init__(self, canvas_data: Canvas = None, all_tags: list[Tag] = None, selected_tag_ids: list[int] = None, selected_task_ids: list[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.canvas_data = canvas_data or Canvas(id=0, title="Nueva Pizarra", width=50, height=20)
+        self.canvas_data = upgrade_canvas(
+            canvas_data or Canvas(id=0, title="Nueva Pizarra", width=100, height=40)
+        )
         self.all_tags = all_tags or []
         self.selected_tag_ids = selected_tag_ids if selected_tag_ids is not None else (list(self.canvas_data.tags) if self.canvas_data and self.canvas_data.tags else [])
         self.selected_task_ids = selected_task_ids or []
         self.current_tool = "draw"
-        self.current_color = "[white]█[/white]"
+        self.current_color = "white"
+        self.brush_half = "bottom"
         self.is_drawing = False
-        self.color_map = {
-            "white": "[white]█[/white]",
-            "red": "[red]█[/red]",
-            "blue": "[blue]█[/blue]",
-            "green": "[green]█[/green]",
-            "yellow": "[yellow]█[/yellow]",
-            "magenta": "[magenta]█[/magenta]",
-            "cyan": "[cyan]█[/cyan]"
-        }
+        self.color_map = {c: c for c in
+                          ("white", "red", "blue", "green", "yellow", "magenta", "cyan")}
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
@@ -2855,21 +2883,33 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
 
     async def on_mount(self) -> None:
         self.query_one("#title-input", Input).focus()
+        self.query_one("#canvas-display", Static).styles.width = self.canvas_data.width
         self.render_canvas()
 
     def render_canvas(self) -> None:
+        grid = self.canvas_data.grid
+        w = self.canvas_data.width
+        h = len(grid)
         lines = []
-        for row in self.canvas_data.grid:
-            line = ""
-            for cell in row:
-                if cell == " ":
-                    line += "  "
+        for y in range(0, h, 2):
+            top = grid[y]
+            bot = grid[y + 1] if y + 1 < h else [" "] * w
+            line = []
+            for x in range(w):
+                t = cell_color(top[x])
+                b = cell_color(bot[x])
+                if t is None and b is None:
+                    line.append(" ")
+                elif b is None:
+                    line.append(f"[{t}]▀[/]")
+                elif t is None:
+                    line.append(f"[{b}]▄[/]")
+                elif t == b:
+                    line.append(f"[{t}]█[/]")
                 else:
-                    line += cell + cell
-            lines.append(line)
-
-        canvas_text = "\n".join(lines)
-        self.query_one("#canvas-display", Static).update(canvas_text)
+                    line.append(f"[{t} on {b}]▀[/]")
+            lines.append("".join(line))
+        self.query_one("#canvas-display", Static).update("\n".join(lines))
 
     @on(Button.Pressed, "#tool-draw")
     def on_tool_draw(self) -> None:
@@ -2890,32 +2930,39 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
         self.render_canvas()
 
     @on(Button.Pressed, "#color-white")
-    def on_color_white(self) -> None:
-        self.current_color = self.color_map["white"]
+    def on_color_white(self) -> None: self.current_color = "white"
 
     @on(Button.Pressed, "#color-red")
-    def on_color_red(self) -> None:
-        self.current_color = self.color_map["red"]
+    def on_color_red(self) -> None: self.current_color = "red"
 
     @on(Button.Pressed, "#color-blue")
-    def on_color_blue(self) -> None:
-        self.current_color = self.color_map["blue"]
+    def on_color_blue(self) -> None: self.current_color = "blue"
 
     @on(Button.Pressed, "#color-green")
-    def on_color_green(self) -> None:
-        self.current_color = self.color_map["green"]
+    def on_color_green(self) -> None: self.current_color = "green"
 
     @on(Button.Pressed, "#color-yellow")
-    def on_color_yellow(self) -> None:
-        self.current_color = self.color_map["yellow"]
+    def on_color_yellow(self) -> None: self.current_color = "yellow"
 
     @on(Button.Pressed, "#color-magenta")
-    def on_color_magenta(self) -> None:
-        self.current_color = self.color_map["magenta"]
+    def on_color_magenta(self) -> None: self.current_color = "magenta"
 
     @on(Button.Pressed, "#color-cyan")
-    def on_color_cyan(self) -> None:
-        self.current_color = self.color_map["cyan"]
+    def on_color_cyan(self) -> None: self.current_color = "cyan"
+
+    def _set_half(self, mode: str) -> None:
+        self.brush_half = mode
+        for m in ("both", "top", "bottom"):
+            self.query_one(f"#half-{m}", Button).set_class(m == mode, "active")
+
+    @on(Button.Pressed, "#half-both")
+    def on_half_both(self) -> None: self._set_half("both")
+
+    @on(Button.Pressed, "#half-top")
+    def on_half_top(self) -> None: self._set_half("top")
+
+    @on(Button.Pressed, "#half-bottom")
+    def on_half_bottom(self) -> None: self._set_half("bottom")
 
     def on_mouse_down(self, event) -> None:
         canvas_widget = self.query_one("#canvas-display", Static)
@@ -2933,20 +2980,29 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
     def _draw_at_position(self, event) -> None:
         canvas_widget = self.query_one("#canvas-display", Static)
         region = canvas_widget.region
-
         if not region.contains(event.screen_x, event.screen_y):
             return
 
-        rel_x = event.screen_x - region.x
-        rel_y = event.screen_y - region.y
-        pixel_x = rel_x // 2
+        px = event.screen_x - region.x
+        row = event.screen_y - region.y
+        if not (0 <= px < self.canvas_data.width):
+            return
 
-        if 0 <= rel_y < self.canvas_data.height and 0 <= pixel_x < self.canvas_data.width:
-            if self.current_tool == "draw":
-                self.canvas_data.grid[rel_y][pixel_x] = self.current_color
-            elif self.current_tool == "erase":
-                self.canvas_data.grid[rel_y][pixel_x] = " "
+        if self.brush_half == "top":
+            ys = [row * 2]
+        elif self.brush_half == "bottom":
+            ys = [row * 2 + 1]
+        else:
+            ys = [row * 2, row * 2 + 1]
 
+        value = self.current_color if self.current_tool == "draw" else " "
+        painted = False
+        for py in ys:
+            if 0 <= py < self.canvas_data.height:
+                self.canvas_data.grid[py][px] = value
+                painted = True
+
+        if painted:
             self.render_canvas()
 
     def _format_tags(self) -> str:
@@ -3009,6 +3065,9 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
 
     @on(Button.Pressed, "#cancel")
     def on_cancel_btn(self) -> None:
+        self.action_cancel()
+
+    def action_cancel(self) -> None:
         self.dismiss(None)
 
 class StatusPickerModal(ModalScreen[Optional[str]]):
@@ -6188,9 +6247,10 @@ class TaskCanvasModal(ModalScreen[list[Canvas]]):
     def __init__(self, canvas_list: list[Canvas], next_canvas_id: int,
                  global_canvas_list: list[Canvas] = None, all_tags: list[Tag] = None, **kwargs) -> None:
         super().__init__(**kwargs)
-        self.canvas_list = [Canvas(id=c.id, title=c.title, width=c.width, height=c.height,
+        self.canvas_list = [upgrade_canvas(Canvas(id=c.id, title=c.title, width=c.width, height=c.height,
                                    grid=[list(r) for r in c.grid], created_at=c.created_at,
-                                   tags=list(c.tags) if c.tags else []) for c in canvas_list]
+                                   tags=list(c.tags) if c.tags else [],
+                                   pixel_mode=getattr(c, "pixel_mode", "legacy"))) for c in canvas_list]
         self.next_canvas_id = next_canvas_id
         self.global_canvas_list = global_canvas_list or []
         self.all_tags = all_tags or []
@@ -6311,7 +6371,7 @@ class TaskCanvasModal(ModalScreen[list[Canvas]]):
             except: pass
 
     def action_add_canvas(self) -> None:
-        c = Canvas(id=self.next_canvas_id, title=f"Pizarra {self.next_canvas_id}", width=50, height=20)
+        c = Canvas(id=self.next_canvas_id, title=f"Pizarra {self.next_canvas_id}", width=100, height=40)
         self.next_canvas_id += 1
         def on_result(result: Optional[dict]) -> None:
             if result:
@@ -12868,7 +12928,8 @@ class TodoApp(App):
                     "width": c.width,
                     "height": c.height,
                     "grid": c.grid,
-                    "created_at": c.created_at
+                    "created_at": c.created_at,
+                    "pixel_mode": getattr(c, "pixel_mode", "half")
                 } for c in self.canvas_list],
                 "voice_notes": [{
                     "id": v.id,
@@ -12923,7 +12984,8 @@ class TodoApp(App):
                         } for v in getattr(s, 'voice_notes', [])],
                         "canvas": [{
                             "id": c.id, "title": c.title, "width": c.width,
-                            "height": c.height, "grid": c.grid, "created_at": c.created_at
+                            "height": c.height, "grid": c.grid, "created_at": c.created_at,
+                            "pixel_mode": getattr(c, "pixel_mode", "half")
                         } for c in getattr(s, 'canvas_list', [])]
                     } for s in t.subtasks],
                     "notes": [{
@@ -12952,7 +13014,8 @@ class TodoApp(App):
                         "height": c.height,
                         "grid": c.grid,
                         "created_at": c.created_at,
-                        "tags": getattr(c, 'tags', [])
+                        "tags": getattr(c, 'tags', []),
+                        "pixel_mode": getattr(c, "pixel_mode", "half")
                     } for c in getattr(t, 'canvas_list', [])]
                 } for t in self.tasks]
             }
@@ -12985,15 +13048,16 @@ class TodoApp(App):
                     created_at=n.get("created_at", ""),
                     tags=n.get("tags", [])
                 ) for n in data.get("notes", [])]
-                self.canvas_list = [Canvas(
+                self.canvas_list = [upgrade_canvas(Canvas(
                     id=c["id"],
                     title=c.get("title", ""),
                     width=c.get("width", 50),
                     height=c.get("height", 20),
                     grid=c.get("grid", [[" " for _ in range(c.get("width", 50))] for _ in range(c.get("height", 20))]),
                     created_at=c.get("created_at", ""),
-                    tags=c.get("tags", [])
-                ) for c in data.get("canvas", [])]
+                    tags=c.get("tags", []),
+                    pixel_mode=c.get("pixel_mode", "legacy")
+                )) for c in data.get("canvas", [])]
                 self.voice_notes = [VoiceNote(
                     id=v["id"],
                     title=v.get("title", ""),
@@ -13057,14 +13121,15 @@ class TodoApp(App):
                         tags=v.get("tags", [])
                     ) for v in t.get("voice_notes", [])]
 
-                    task_canvas_list = [Canvas(
+                    task_canvas_list = [upgrade_canvas(Canvas(
                         id=c["id"],
                         title=c.get("title", ""),
                         width=c.get("width", 50),
                         height=c.get("height", 20),
                         grid=c.get("grid", [[" " for _ in range(c.get("width", 50))] for _ in range(c.get("height", 20))]),
-                        created_at=c.get("created_at", "")
-                    ) for c in t.get("canvas", [])]
+                        created_at=c.get("created_at", ""),
+                        pixel_mode=c.get("pixel_mode", "legacy")
+                    )) for c in t.get("canvas", [])]
 
                     task = Task(
                         id=t["id"], 
