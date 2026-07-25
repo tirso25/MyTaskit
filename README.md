@@ -19,7 +19,12 @@ Una aplicación de gestión de tareas moderna y completa para la terminal, const
 
 ### 🎯 Gestión Completa de Tareas y Subtareas
 - **Crear, editar y eliminar** tareas y subtareas con interfaz intuitiva
-- **Sección de completadas**: Tareas y subtareas completadas se muestran organizadas bajo `── Completadas ──`
+- **Sistema de Estado de 3 Vías**: Control completo para tareas y subtareas en estados `🔄 En progreso`, `⏳ En espera` y `✅ Completado`
+- **Organización Visual por Secciones**: Listas organizadas limpiamente en tres bloques dinámicos:
+  - `── En progreso ──`
+  - `── En espera ──`
+  - `── Completadas ──`
+- **Sincronización Inteligente**: Al alternar finalización (`Espacio` / `Enter`), la tarea/subtarea conmuta de forma coherente entre `En progreso` y `Completado`, preservando el estado `En espera` cuando aplica.
 - **Vista General unificada**: Completa (`Espacio`/`Enter`), edita (`e`) y elimina (`d`) tareas y subtareas desde una sola vista
 - **Prioridades** con 4 niveles: Sin prioridad, Baja ⬇, Media ■, Alta ⬆
 - **Fechas de vencimiento** con calendario visual integrado
@@ -50,14 +55,16 @@ Una aplicación de gestión de tareas moderna y completa para la terminal, const
 - **Filtros múltiples** combinables:
   - 📅 Por fechas (múltiples fechas o sin fecha)
   - 🏷️ Por etiquetas (modo AND - todas deben coincidir)
-  - ✅ Por estado (pendientes/completadas)
+  - ✅ Por estado (`🔄 En progreso`, `⏳ En espera`, `✅ Completadas`)
   - ⭐ Por prioridad (múltiples niveles)
+- **Título de Filtro Adaptativo**: Al presionar `f` en vistas o modales de subtareas, el modal se personaliza dinámicamente como `🔍 Filtrar Subtareas`
+- **Navegación por Teclado Instantánea**: Selector de estado (`StatusPickerModal`) ultra-fluido sin pestañeos visuales
 
 - **Ordenación flexible** por categorías:
   - 🔤 Alfabético (A→Z o Z→A)
   - 📅 Fecha (próximas primero o lejanas primero)
   - ⭐ Prioridad (alta→baja o baja→alta)
-  - ➕ **Combinable**: Los criterios se aplican en orden jerárquico
+  - ➕ **Combinable**: Los criterios se aplican en orden jerárquico respetando las secciones de estado
 
 ### 📅 Modo Calendario
 - **Calendario visual** completo
@@ -83,7 +90,7 @@ Una aplicación de gestión de tareas moderna y completa para la terminal, const
 - **Diseño responsive** que se adapta a tu terminal
 - **Navegación tipo Vim** (h/j/k/l) además de flechas
 - **Estadísticas en tiempo real** en barra inferior
-- **Separación visual** entre elementos pendientes y completados
+- **Separación visual clara** entre estados *En progreso*, *En espera* y *Completadas*
 
 ### 🔎 Búsqueda Global
 - **Búsqueda de texto** en todas las tareas, subtareas y notas
@@ -100,11 +107,12 @@ MyTaskit incluye un potente sistema de **undo/redo** que te permite deshacer y r
 - ⏮️ **Deshacer** con `Ctrl+Z` - Revierte la última acción realizada
 - ⏭️ **Rehacer** con `Ctrl+Y` - Restaura una acción que fue deshecha
 - 📚 **Hasta 50 niveles** - Mantiene un historial de hasta 50 acciones
-- 🎯 **Restauración completa** - Recupera el estado exacto anterior (tareas, grupos, etiquetas, selección actual)
+- 🎯 **Restauración completa** - Recupera el estado exacto anterior (tareas, subtareas, estados, grupos, etiquetas, selección actual)
 - 🔄 **Inteligente** - La pila de rehacer se limpia automáticamente al realizar una nueva acción
 
 ### ¿Qué se puede deshacer?
-✅ Crear, editar y eliminar **tareas**  
+✅ Crear, editar y eliminar **tareas y subtareas**  
+✅ Cambiar el **estado de 3 vías** (En progreso / En espera / Completado)  
 ✅ Crear, renombrar y eliminar **grupos** (junto con sus tareas)  
 ✅ Crear, editar y eliminar **etiquetas**  
 ✅ Marcar/desmarcar tareas como **completadas**  
@@ -113,9 +121,9 @@ MyTaskit incluye un potente sistema de **undo/redo** que te permite deshacer y r
 
 ### Ejemplo de uso
 ```
-1. Eliminas una tarea por error
+1. Cambias el estado de una tarea a "En espera" o eliminas una por error
    → Presionas Ctrl+Z
-   → La tarea reaparece
+   → La tarea vuelve a su estado/existencia previa
 
 2. Presionas Ctrl+Z varias veces
    → Deshaces múltiples acciones
@@ -168,28 +176,32 @@ Los datos se guardan automáticamente en:
 
 1. **Ejecutar la aplicación**:
 ```bash
-   python todo.py
+   python MyTaskit.py
 ```
 
 2. **Crear tu primera tarea**:
    - Presiona `a` para añadir una tarea
    - Escribe el texto y presiona Enter
 
-3. **Organizar con grupos**:
+3. **Asignar estado a una tarea/subtarea**:
+   - Presiona `e` para editar la tarea/subtarea
+   - Selecciona `🔄 Cambiar Estado` para alternar entre *En progreso*, *En espera* y *Completado*
+
+4. **Organizar con grupos**:
    - Presiona `g` para crear un grupo
    - Usa `←` `→` para navegar entre grupos
 
-4. **Marcar como completada**:
+5. **Marcar como completada**:
    - Selecciona una tarea con `↑` `↓`
    - Presiona `Espacio` o `Enter`
 
 ### Flujo de Trabajo Típico
 ```
 1. Crear grupos por proyecto/contexto
-2. Añadir tareas a cada grupo
-3. Asignar prioridades y fechas
+2. Añadir tareas y subtareas a cada grupo
+3. Asignar estados (En progreso / En espera / Completado), prioridades y fechas
 4. Añadir etiquetas para categorización
-5. Filtrar y ordenar según necesites
+5. Filtrar (f) y ordenar (o) según necesites
 6. Marcar como completadas al terminar
 7. Deshacer con Ctrl+Z si cometes un error
 ```
@@ -198,35 +210,27 @@ Los datos se guardan automáticamente en:
 
 ## ⌨️ Atajos de Teclado
 
-### Gestión de Tareas
+### Gestión de Tareas y Subtareas
 | Tecla | Acción |
 |-------|--------|
-| `a` | Añadir nueva tarea |
-| `e` | Editar tarea seleccionada |
-| `d` | Eliminar tarea seleccionada |
-| `Espacio` | Marcar/Desmarcar como completada |
+| `a` | Añadir nueva tarea / subtarea |
+| `e` | Editar tarea o subtarea seleccionada (incluye cambio de estado) |
+| `d` | Eliminar tarea o subtarea seleccionada |
+| `Espacio` | Marcar/Desmarcar como completada (Conmuta estado a Completado / En progreso) |
 | `Enter` | Marcar/Desmarcar como completada |
 
-### Deshacer/Rehacer ⭐ NUEVO
+### Deshacer/Rehacer ⭐
 | Tecla | Acción |
 |-------|--------|
 | `Ctrl+Z` | Deshacer última acción (hasta 50 acciones) |
 | `Ctrl+Y` | Rehacer acción deshecha |
 
-**¿Qué se puede deshacer?**
-- ✅ Crear, editar y eliminar tareas
-- ✅ Crear, renombrar y eliminar grupos
-- ✅ Crear, editar y eliminar etiquetas
-- ✅ Marcar/desmarcar tareas completadas
-- ✅ Asignar fechas desde calendario
-- ✅ Restaura selección y grupo actual
-
 ### Navegación
 | Tecla | Acción |
 |-------|--------|
-| `↑` `↓` o `k` `j` | Navegar entre tareas |
+| `↑` `↓` o `k` `j` | Navegar entre tareas y subtareas |
 | `←` `→` o `h` `l` | Cambiar de grupo |
-| `Tab` | Ciclo: General → Sin grupo → Grupos personalizados |
+| `Tab` | Ciclo: General → Sin grupo → Grupos personalizados → Pestañas especiales |
 
 ### Grupos
 | Tecla | Acción |
@@ -237,16 +241,16 @@ Los datos se guardan automáticamente en:
 ### Filtros y Ordenación
 | Tecla | Acción |
 |-------|--------|
-| `f` | Abrir modal de filtros |
+| `f` | Abrir modal de filtros (Muestra `Filtrar Subtareas` o `Filtrar Tareas` según contexto) |
 | `F5` | Resetear todos los filtros |
 | `o` | Abrir modal de ordenación |
-| `/` | Buscar tareas por texto |
+| `/` | Buscar tareas y subtareas por texto |
 
 ### Etiquetas
 | Tecla | Acción |
 |-------|--------|
 | `T` | Gestionar etiquetas globales |
-| (En edición) | Asignar etiquetas a tarea |
+| (En edición) | Asignar etiquetas a tarea o subtarea |
 
 ### Calendario
 | Tecla | Acción |
@@ -259,7 +263,7 @@ Los datos se guardan automáticamente en:
 | `a` | Asignar fecha a tareas sin fecha |
 | `Enter` | Ver tareas del día seleccionado |
 
-### Minijuego Snake 🐍 ⭐ NUEVO
+### Minijuego Snake 🐍
 | Tecla | Acción |
 |-------|--------|
 | `Ctrl+G` | Abrir minijuego de Snake |
@@ -275,46 +279,33 @@ Los datos se guardan automáticamente en:
 
 ---
 
-## 🖼️ Capturas de Pantalla
+## 🖼️ Capturas / Esquemas de Pantalla
 
-### Vista Principal
+### Vista Principal con Secciones de Estado
 ```
 ┌─ 📋 TODO App ─────────────────────────────────────────────────────────────┐
 │  📚 General   📋 Sin grupo   📁 Trabajo   📁 Personal                      │
 ├───────────────────────────────────────────────────────────────────────────┤
-│ ☐ ⬆  Revisar propuesta cliente  Urgente  💬2 🔗1  Grupo: Trabajo  📅 08/01│
-│ ☐ ■  Comprar regalo cumpleaños  Personal  💬1     Grupo: Personal 📅 10/01│
-│ ☑    Llamar al dentista                           Grupo: Personal         │
+│                             ── En progreso ──                             │
+│ ☐ ⬆  Revisar propuesta cliente 🔄 En progreso  Urgente 💬2 🔗1  📅 08/01  │
+│                             ── En espera ──                               │
+│ ☐ ■  Esperar feedback diseño   ⏳ En espera    Trabajo  💬1     📅 12/01  │
+│                             ── Completadas ──                             │
+│ ☑    Llamar al dentista        ✅ Completado   Personal                   │
 ├───────────────────────────────────────────────────────────────────────────┤
-│ Total: 3 | Completadas: 1 | Pendientes: 2 | Grupo: General               │
+│ Total: 3 | En progreso: 1 | En espera: 1 | Completadas: 1 | Grupo: General │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Modo Calendario
+### Modal de Filtros de Subtareas (`Filtrar Subtareas`)
 ```
-┌─ 📋 TODO App ─────────────────────────────────────────────────────────────┐
-│                          Enero 2026                                        │
-│   Lu  Ma  Mi  Ju  Vi  Sá  Do                                              │
-│   ─────────────────────────                                               │
-│                   1   2   3                                                │
-│    4   5   6  •7  [8]  9  10                                              │
-│   11  12  13  14  15  16  17                                              │
-│                                                                            │
-│ 📋 2 tarea(s):                                                            │
-│   ☐ Revisar propuesta cliente          Grupo: Trabajo                     │
-│   ☐ Reunión equipo                     Grupo: Trabajo                     │
-└───────────────────────────────────────────────────────────────────────────┘
-```
-
-### Modal de Filtros
-```
-┌─ 🔍 Filtrar Tareas ──────────────────────────────────────┐
+┌─ 🔍 Filtrar Subtareas ────────────────────────────────────┐
 │ Fecha:                                                   │
 │  📅 08/01, 10/01                [📅 Seleccionar] [❌ Quitar]│
 │ Etiquetas:                                               │
 │  🏷️ Urgente, Personal           [🏷️ Seleccionar] [❌ Quitar]│
 │ Estado:                                                  │
-│  ✅ Pendientes                  [✓ Seleccionar] [❌ Quitar] │
+│  🔄 En progreso, ⏳ En espera   [✓ Seleccionar] [❌ Quitar] │
 │ Prioridad:                                               │
 │  ⭐ Alta, Media                 [⭐ Seleccionar] [❌ Quitar] │
 │                                                          │
@@ -326,7 +317,7 @@ Los datos se guardan automáticamente en:
 
 ## 🗂️ Estructura de Datos
 
-El archivo `todo_tasks.json` tiene la siguiente estructura:
+El archivo `todo_tasks.json` incluye la propiedad `status` para tareas y subtareas:
 ```json
 {
   "next_task_id": 4,
@@ -338,25 +329,33 @@ El archivo `todo_tasks.json` tiene la siguiente estructura:
   ],
   "tags": [
     {"id": 1, "name": "Urgente"},
-    {"id": 2, "name": "Importante"},
-    {"id": 3, "name": "Revisión"}
+    {"id": 2, "name": "Importante"}
   ],
   "tasks": [
     {
       "id": 1,
       "text": "Revisar propuesta cliente",
       "done": false,
+      "status": "En progreso",
       "created_at": "08/01 14:30",
       "group_id": 1,
       "due_date": "2026-01-08",
       "priority": 3,
-      "tags": [1, 2],
+      "tags": [1],
+      "subtasks": [
+        {
+          "id": 1,
+          "text": "Revisar tabla de precios",
+          "done": false,
+          "status": "En espera",
+          "priority": 2
+        }
+      ],
       "comments": [
         {
           "id": 1,
-          "text": "Revisar sección de precios",
-          "url": "https://docs.google.com/...",
-          "created_at": "08/01 14:35"
+          "title": "Documento borrador",
+          "url": "https://docs.google.com/..."
         }
       ]
     }
@@ -370,7 +369,7 @@ El archivo `todo_tasks.json` tiene la siguiente estructura:
 
 ### Para Desarrolladores
 ```
-✅ Gestión de issues/bugs por proyecto
+✅ Gestión de issues/bugs por proyecto en progreso o en espera
 ✅ Seguimiento de tareas de sprint
 ✅ Lista de features pendientes
 ✅ Recordatorios de code review
@@ -392,51 +391,7 @@ El archivo `todo_tasks.json` tiene la siguiente estructura:
 ✅ Planificación de eventos
 ```
 
-### Para Gestión de Proyectos
-```
-✅ Hitos del proyecto
-✅ Tareas por fase
-✅ Seguimiento de dependencias
-✅ Coordinación de equipo
-```
-
 ---
-
-## 🔧 Configuración Avanzada
-
-### Personalizar Ubicación de Datos
-
-Edita en el código (línea ~2717):
-```python
-self.data_file = Path.home() / "todo" / "todo_tasks.json"
-# Cambiar a tu ubicación preferida:
-# self.data_file = Path("/mi/ruta/custom/tasks.json")
-```
-
-### Cambiar Tema
-
-Edita en el código (línea ~2740):
-```python
-theme = "dracula"
-# Otros temas disponibles:
-# "textual-dark", "textual-light", "nord", "monokai"
-```
-
-### Ajustar Auto-guardado
-
-Edita en el código (línea ~2759):
-```python
-self.set_interval(10, self.save_data)  # 10 segundos
-# Cambiar el número para ajustar intervalo
-```
-
-### Ajustar Niveles de Deshacer
-
-Edita en el código (línea ~2736):
-```python
-self.max_undo = 50  # Máximo de acciones que se pueden deshacer
-# Cambiar el número según tus necesidades
-```
 
 ## 📄 Licencia
 
@@ -453,6 +408,5 @@ Este proyecto está bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) par
 <div align="center">
 
 **¿Te gusta este proyecto? ¡Dale una ⭐ en GitHub!**
-
 
 </div>
