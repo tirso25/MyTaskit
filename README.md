@@ -17,20 +17,33 @@ Una aplicación de gestión de tareas moderna y completa para la terminal, const
 
 ## ✨ Características
 
-### 🎯 Gestión Completa de Tareas
-- **Crear, editar y eliminar** tareas con interfaz intuitiva
+### 🎯 Gestión Completa de Tareas y Subtareas
+- **Crear, editar y eliminar** tareas y subtareas con interfaz intuitiva
+- **Sección de completadas**: Tareas y subtareas completadas se muestran organizadas bajo `── Completadas ──`
+- **Vista General unificada**: Completa (`Espacio`/`Enter`), edita (`e`) y elimina (`d`) tareas y subtareas desde una sola vista
 - **Prioridades** con 4 niveles: Sin prioridad, Baja ⬇, Media ■, Alta ⬆
 - **Fechas de vencimiento** con calendario visual integrado
 - **Comentarios** con soporte para enlaces/URLs
-- **Etiquetas** personalizables e ilimitadas por tarea
-- **Estado** de tareas: pendientes y completadas
+- **Etiquetas** personalizables e ilimitadas por tarea/subtarea
 - **Auto-guardado** cada 10 segundos (silencioso)
+
+### 📝 Notas, 🎨 Pizarras y 🎤 Notas de Voz
+- **Notas**: Almacena notas de texto globales o integradas en tareas y subtareas
+- **Pizarras**: Dibujos y esquemas visuales vinculados o independientes
+- **Audios**: Grabación y reproducción de notas de voz integradas
+- **Pestañas dedicadas**: Acceso rápido en la barra superior para Subtareas, Notas, Pizarras, Audios y Etiquetas
+
+### 🐍 Minijuego Snake Infinito
+- **Activación rápida**: Presiona `Ctrl+G` en cualquier momento para jugar
+- **Controles**: Flechas, WASD o HJKL para moverte
+- **Pantalla de Game Over**: Muestra la puntuación final alcanzada y el tiempo aguantado (`MM:SS`)
+- **Salida directa**: Presiona `Ctrl+F` o `Esc` para volver a la aplicación
 
 ### 📁 Organización por Grupos
 - **Grupos personalizados** para categorizar tareas
-- **Grupo General** - Vista unificada de todas las tareas
+- **Grupo General** - Vista unificada de todas las tareas, subtareas, notas, pizarras y audios
 - **Grupo Sin grupo** - Tareas sin categoría asignada
-- **Navegación rápida** entre grupos con flechas o Tab
+- **Navegación rápida** entre grupos con flechas, H/L o Tab
 - **Gestión de grupos**: crear, renombrar y eliminar
 
 ### 🔍 Filtrado y Ordenación Avanzada
@@ -55,11 +68,10 @@ Una aplicación de gestión de tareas moderna y completa para la terminal, const
 - **Asignación masiva** de fechas a tareas sin fecha
 
 ### 💬 Comentarios con Enlaces
-- **Comentarios ilimitados** por tarea
+- **Comentarios ilimitados** por tarea y subtarea
 - **Enlaces/URLs** opcionales en cada comentario
 - **Apertura automática** de enlaces en navegador con Control + o
 - **Icono 🔗** indica comentarios con enlaces
-- **Validación de URLs** (http:// o https://)
 
 ### 🔔 Sistema de Recordatorios
 - **Notificaciones** automáticas al iniciar la app
@@ -71,10 +83,10 @@ Una aplicación de gestión de tareas moderna y completa para la terminal, const
 - **Diseño responsive** que se adapta a tu terminal
 - **Navegación tipo Vim** (h/j/k/l) además de flechas
 - **Estadísticas en tiempo real** en barra inferior
-- **Separación visual** entre tareas pendientes y completadas
+- **Separación visual** entre elementos pendientes y completados
 
 ### 🔎 Búsqueda Global
-- **Búsqueda de texto** en todas las tareas
+- **Búsqueda de texto** en todas las tareas, subtareas y notas
 - **Navegación directa** al grupo de la tarea encontrada
 - **Resultados múltiples** con modal de selección
 
@@ -246,6 +258,14 @@ Los datos se guardan automáticamente en:
 | `t` | Ir a hoy |
 | `a` | Asignar fecha a tareas sin fecha |
 | `Enter` | Ver tareas del día seleccionado |
+
+### Minijuego Snake 🐍 ⭐ NUEVO
+| Tecla | Acción |
+|-------|--------|
+| `Ctrl+G` | Abrir minijuego de Snake |
+| `Flechas` / `WASD` / `HJKL` | Mover la serpiente |
+| `R` / `Enter` | Reiniciar partida tras Game Over |
+| `Ctrl+F` / `Esc` | Salir del juego |
 
 ### Sistema
 | Tecla | Acción |
@@ -434,6 +454,5 @@ Este proyecto está bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) par
 
 **¿Te gusta este proyecto? ¡Dale una ⭐ en GitHub!**
 
-[Reportar Bug](https://github.com/tu-usuario/todo-app/issues) • [Solicitar Feature](https://github.com/tu-usuario/todo-app/issues) • [Discusiones](https://github.com/tu-usuario/todo-app/discussions)
 
 </div>
