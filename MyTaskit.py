@@ -9198,6 +9198,531 @@ class SnakeModal(ModalScreen):
                 board_rows.append("".join(row_cells))
             board_widget.update("\n".join(board_rows))
 
+ASCII_DIGITS = {
+    '0': ["█████", "█   █", "█   █", "█   █", "█████"],
+    '1': ["  █  ", " ██  ", "  █  ", "  █  ", "█████"],
+    '2': ["█████", "    █", "█████", "█    ", "█████"],
+    '3': ["█████", "    █", "█████", "    █", "█████"],
+    '4': ["█   █", "█   █", "█████", "    █", "    █"],
+    '5': ["█████", "█    ", "█████", "    █", "█████"],
+    '6': ["█████", "█    ", "█████", "█   █", "█████"],
+    '7': ["█████", "    █", "   █ ", "  █  ", "  █  "],
+    '8': ["█████", "█   █", "█████", "█   █", "█████"],
+    '9': ["█████", "█   █", "█████", "    █", "█████"],
+    ':': ["     ", "  █  ", "     ", "  █  ", "     "],
+}
+
+MESES = [
+    "", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+]
+DIAS_SEMANA = ["Lu", "Ma", "Mi", "Ju", "Vi", "Sá", "Do"]
+
+def time_to_ascii(time_str: str) -> str:
+    lines = ["", "", "", "", ""]
+    for char in time_str:
+        if char in ASCII_DIGITS:
+            for i, line in enumerate(ASCII_DIGITS[char]):
+                lines[i] += line + " "
+    return "\n".join(lines)
+
+def generate_calendar(year: int, month: int, today: datetime) -> str:
+    cal = calendar.Calendar(firstweekday=0)
+    header = f"         {MESES[month]} {year}         "
+    days_header = "  ".join(DIAS_SEMANA)
+    weeks = []
+    for week in cal.monthdayscalendar(year, month):
+        week_str = ""
+        for day in week:
+            if day == 0:
+                week_str += "    "
+            else:
+                if year == today.year and month == today.month and day == today.day:
+                    week_str += f"[bold cyan][{day:2d}][/bold cyan]"
+                else:
+                    week_str += f" {day:2d} "
+        weeks.append(week_str)
+    lines = ["", header, "─" * len(header), days_header, "─" * len(days_header)]
+    lines.extend(weeks)
+    return "\n".join(lines)
+
+
+class PomodoroConfigModal(ModalScreen[Optional[tuple[int, int]]]):
+    DEFAULT_CSS = """
+    PomodoroConfigModal { align: center middle; }
+    PomodoroConfigModal > VerticalScroll {
+        width: 50; height: auto; border: thick $primary;
+        background: $surface; padding: 1 2;
+    }
+    PomodoroConfigModal .modal-title { text-align: center; text-style: bold; width: 100%; margin-bottom: 1; }
+    PomodoroConfigModal .section-label { margin-top: 1; color: $text-muted; }
+    PomodoroConfigModal Input { width: 100%; margin-bottom: 1; }
+    PomodoroConfigModal .button-row { width: 100%; height: auto; align: center middle; margin-top: 1; }
+    PomodoroConfigModal Button { margin: 0 1; }
+    """
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, focus_time: int, break_time: int, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.focus_time = focus_time
+        self.break_time = break_time
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll():
+            yield Label("⚙️ Configurar Pomodoro", classes="modal-title")
+            yield Label("Tiempo de focus (minutos):", classes="section-label")
+            yield Input(value=str(self.focus_time), id="focus-input")
+            yield Label("Tiempo de descanso (minutos):", classes="section-label")
+            yield Input(value=str(self.break_time), id="break-input")
+            with Horizontal(classes="button-row"):
+                yield Button("Guardar", variant="primary", id="save")
+                yield Button("Cancelar", variant="default", id="cancel")
+
+    def on_mount(self) -> None:
+        try: self.query_one("#focus-input", Input).focus()
+        except: pass
+
+    @on(Button.Pressed, "#save")
+    @on(Input.Submitted)
+    def on_save(self) -> None:
+        try:
+            focus = int(self.query_one("#focus-input", Input).value)
+            break_t = int(self.query_one("#break-input", Input).value)
+            if focus > 0 and break_t > 0:
+                self.dismiss((focus, break_t))
+            else:
+                self.dismiss(None)
+        except ValueError:
+            self.dismiss(None)
+
+    @on(Button.Pressed, "#cancel")
+    def on_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class TimerConfigModal(ModalScreen[Optional[tuple[int, int, str]]]):
+    DEFAULT_CSS = """
+    TimerConfigModal { align: center middle; }
+    TimerConfigModal > VerticalScroll {
+        width: 50; height: auto; border: thick $primary;
+        background: $surface; padding: 1 2;
+    }
+    TimerConfigModal .modal-title { text-align: center; text-style: bold; width: 100%; margin-bottom: 1; }
+    TimerConfigModal .section-label { margin-top: 1; color: $text-muted; }
+    TimerConfigModal Input { width: 100%; margin-bottom: 1; }
+    TimerConfigModal .button-row { width: 100%; height: auto; align: center middle; margin-top: 1; }
+    TimerConfigModal Button { margin: 0 1; }
+    """
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, initial_minutes: int = 5, initial_seconds: int = 0, initial_name: str = "", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.initial_minutes = initial_minutes
+        self.initial_seconds = initial_seconds
+        self.initial_name = initial_name
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll():
+            yield Label("⏲️ Configurar Temporizador", classes="modal-title")
+            yield Label("Minutos:", classes="section-label")
+            yield Input(value=str(self.initial_minutes) if self.initial_minutes > 0 else "5", id="minutes-input", placeholder="Minutos")
+            yield Label("Segundos:", classes="section-label")
+            yield Input(value=str(self.initial_seconds), id="seconds-input", placeholder="Segundos")
+            yield Label("Nombre (opcional):", classes="section-label")
+            yield Input(value=self.initial_name, id="name-input", placeholder="Ej: Té, Ejercicio...")
+            with Horizontal(classes="button-row"):
+                yield Button("Iniciar", variant="primary", id="start")
+                yield Button("Cancelar", variant="default", id="cancel")
+
+    def on_mount(self) -> None:
+        try: self.query_one("#minutes-input", Input).focus()
+        except: pass
+
+    @on(Button.Pressed, "#start")
+    @on(Input.Submitted)
+    def on_start(self) -> None:
+        try:
+            minutes = int(self.query_one("#minutes-input", Input).value or "0")
+            seconds = int(self.query_one("#seconds-input", Input).value or "0")
+            name = self.query_one("#name-input", Input).value.strip()
+            if minutes > 0 or seconds > 0:
+                self.dismiss((minutes, seconds, name))
+            else:
+                self.dismiss(None)
+        except ValueError:
+            self.dismiss(None)
+
+    @on(Button.Pressed, "#cancel")
+    def on_cancel(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ClockModal(ModalScreen):
+    BINDINGS = [
+        Binding("escape", "exit_clock", "Ocultar"),
+        Binding("ctrl+t", "exit_clock", "Ocultar", show=False),
+        Binding("left", "prev_tab", "Anterior", show=False),
+        Binding("h", "prev_tab", "Anterior", show=False),
+        Binding("right", "next_tab", "Siguiente", show=False),
+        Binding("l", "next_tab", "Siguiente", show=False),
+        Binding("space", "toggle_start", "Iniciar/Pausar"),
+        Binding("r", "reset", "Reiniciar"),
+        Binding("s", "settings", "Configurar"),
+        Binding("q", "quit_clock", "Cerrar y Apagar"),
+    ]
+
+    DEFAULT_CSS = """
+    ClockModal {
+        align: center middle;
+    }
+    #clock-modal-box {
+        width: 95%;
+        height: 92%;
+        max-width: 140;
+        max-height: 45;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+        content-align: center middle;
+    }
+    #clock-tabs-row {
+        width: 100%;
+        height: 3;
+        layout: horizontal;
+        align: center middle;
+        margin-bottom: 1;
+    }
+    .clock-tab-btn {
+        width: auto;
+        height: 3;
+        padding: 0 3;
+        margin: 0 1;
+        border: solid $primary-background;
+        content-align: center middle;
+    }
+    .clock-tab-btn:hover {
+        background: $boost;
+    }
+    .clock-tab-btn.active {
+        border: solid $accent;
+        background: $surface-lighten-1;
+        color: $accent;
+        text-style: bold;
+    }
+    #clock-main-display {
+        width: 100%;
+        height: 1fr;
+        content-align: center middle;
+        text-align: center;
+        color: $accent;
+    }
+    #clock-sub-info {
+        width: 100%;
+        height: 1;
+        text-align: center;
+        text-style: bold;
+        color: $text;
+        margin-top: 1;
+    }
+    #clock-status-label {
+        width: 100%;
+        height: 1;
+        text-align: center;
+        color: $text-muted;
+    }
+    #clock-footer-hint {
+        width: 100%;
+        height: 1;
+        text-align: center;
+        color: $text-muted;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.modes = [
+            ("stopwatch", "⏱️ Cronómetro", "Medidor de tiempo transcurrido"),
+            ("pomodoro", "🍅 Pomodoro", "Técnica Pomodoro (Focus / Descanso)"),
+            ("timer", "⏲️ Temporizador", "Cuenta regresiva con notificación"),
+            ("clock", "🕐 Reloj", "Reloj digital en tiempo real"),
+        ]
+
+    @property
+    def state(self) -> dict:
+        return self.app.time_tools_state
+
+    def compose(self) -> ComposeResult:
+        active_idx = self.state.get("active_mode_index", 0)
+        with Container(id="clock-modal-box"):
+            with Horizontal(id="clock-tabs-row"):
+                for i, (mode_id, label, _) in enumerate(self.modes):
+                    classes = "clock-tab-btn active" if i == active_idx else "clock-tab-btn"
+                    yield Static(label, id=f"clock-tab-{i}", classes=classes)
+            yield Static("", id="clock-main-display")
+            yield Static("", id="clock-sub-info")
+            yield Static("", id="clock-status-label")
+            yield Static("", id="clock-footer-hint")
+
+    def on_mount(self) -> None:
+        self.update_tab_ui()
+        self.set_interval(0.1, self.tick)
+
+    def on_key(self, event) -> None:
+        key = event.key.lower()
+        if key == "s":
+            event.prevent_default()
+            event.stop()
+            self.action_settings()
+        elif key == "r":
+            event.prevent_default()
+            event.stop()
+            self.action_reset()
+        elif key == "space":
+            event.prevent_default()
+            event.stop()
+            self.action_toggle_start()
+        elif key in ["left", "h"]:
+            event.prevent_default()
+            event.stop()
+            self.action_prev_tab()
+        elif key in ["right", "l"]:
+            event.prevent_default()
+            event.stop()
+            self.action_next_tab()
+        elif key == "escape":
+            event.prevent_default()
+            event.stop()
+            self.action_exit_clock()
+        elif key == "q":
+            event.prevent_default()
+            event.stop()
+            self.action_quit_clock()
+
+    def on_click(self, event) -> None:
+        for i in range(len(self.modes)):
+            try:
+                btn = self.query_one(f"#clock-tab-{i}", Static)
+                if event.widget == btn:
+                    self.state["active_mode_index"] = i
+                    self.update_tab_ui()
+                    break
+            except: pass
+
+    def action_prev_tab(self) -> None:
+        idx = self.state.get("active_mode_index", 0)
+        self.state["active_mode_index"] = (idx - 1) % len(self.modes)
+        self.update_tab_ui()
+
+    def action_next_tab(self) -> None:
+        idx = self.state.get("active_mode_index", 0)
+        self.state["active_mode_index"] = (idx + 1) % len(self.modes)
+        self.update_tab_ui()
+
+    def update_tab_ui(self) -> None:
+        active_idx = self.state.get("active_mode_index", 0)
+        for i in range(len(self.modes)):
+            try:
+                tab = self.query_one(f"#clock-tab-{i}", Static)
+                tab.set_class(i == active_idx, "active")
+            except: pass
+
+        mode_id, label, desc = self.modes[active_idx]
+        footer_hint = self.query_one("#clock-footer-hint", Static)
+
+        if mode_id == "stopwatch":
+            footer_hint.update("←/→: Cambiar | Espacio: Iniciar/Pausar | R: Reiniciar | Esc: Ocultar | Q: Apagar")
+        elif mode_id == "pomodoro":
+            f_t = self.state["pomodoro_focus_time"]
+            b_t = self.state["pomodoro_break_time"]
+            footer_hint.update(f"←/→: Cambiar | Espacio: Iniciar/Pausar | R: Reiniciar | S: Config ({f_t}/{b_t}m) | Esc: Ocultar | Q: Apagar")
+        elif mode_id == "timer":
+            footer_hint.update("←/→: Cambiar | Espacio: Iniciar/Pausar | R: Reiniciar | S: Configurar | Esc: Ocultar | Q: Apagar")
+        elif mode_id == "clock":
+            footer_hint.update("←/→: Cambiar | Esc: Ocultar | Q: Cerrar")
+
+    def tick(self) -> None:
+        active_idx = self.state.get("active_mode_index", 0)
+        mode_id = self.modes[active_idx][0]
+        main_disp = self.query_one("#clock-main-display", Static)
+        sub_info = self.query_one("#clock-sub-info", Static)
+        status_lbl = self.query_one("#clock-status-label", Static)
+
+        if mode_id == "stopwatch":
+            if self.state["stopwatch_running"] and self.state["stopwatch_start_time"]:
+                elapsed = self.state["stopwatch_elapsed"] + (datetime.now() - self.state["stopwatch_start_time"])
+            else:
+                elapsed = self.state["stopwatch_elapsed"]
+            total_sec = int(elapsed.total_seconds())
+            h, rem = divmod(total_sec, 3600)
+            m, s = divmod(rem, 60)
+            t_str = f"{h:02d}:{m:02d}:{s:02d}"
+            main_disp.update(time_to_ascii(t_str))
+            sub_info.update("⏱️ Cronómetro - Medidor de tiempo transcurrido")
+            status_lbl.update("▶️ En marcha" if self.state["stopwatch_running"] else "⏸️ Pausado")
+
+        elif mode_id == "pomodoro":
+            if self.state["pomodoro_running"] and self.state["pomodoro_start_time"]:
+                elapsed = datetime.now() - self.state["pomodoro_start_time"]
+                remaining = self.state["pomodoro_remaining"] - elapsed
+            else:
+                remaining = self.state["pomodoro_remaining"]
+
+            total_sec = max(0, int(remaining.total_seconds()))
+            m, s = divmod(total_sec, 60)
+            t_str = f"00:{m:02d}:{s:02d}"
+            main_disp.update(time_to_ascii(t_str))
+            mode_txt = "[bold green]🎯 FOCUS[/bold green]" if self.state["pomodoro_is_focus"] else "[bold yellow]☕ DESCANSO[/bold yellow]"
+            sub_info.update(f"🍅 Pomodoro - Estado: {mode_txt}")
+            status_lbl.update("▶️ En marcha" if self.state["pomodoro_running"] else "⏸️ Pausado")
+
+        elif mode_id == "timer":
+            if self.state["timer_running"] and self.state["timer_start_time"]:
+                elapsed = datetime.now() - self.state["timer_start_time"]
+                remaining = self.state["timer_remaining"] - elapsed
+            else:
+                remaining = self.state["timer_remaining"]
+
+            total_sec = max(0, int(remaining.total_seconds()))
+            h, rem = divmod(total_sec, 3600)
+            m, s = divmod(rem, 60)
+            t_str = f"{h:02d}:{m:02d}:{s:02d}"
+            main_disp.update(time_to_ascii(t_str))
+            t_name = self.state["timer_name"]
+            t_title = f"⏲️ Temporizador ({t_name})" if t_name else "⏲️ Temporizador"
+            sub_info.update(t_title)
+            if self.state["timer_finished"]:
+                status_lbl.update("[bold red]🔔 ¡TIEMPO TERMINADO![/bold red]")
+            elif self.state["timer_running"]:
+                status_lbl.update("▶️ En marcha")
+            elif self.state["timer_duration"].total_seconds() > 0:
+                status_lbl.update("⏸️ Pausado")
+            else:
+                status_lbl.update("Pulsa 's' para configurar minutos y segundos")
+
+        elif mode_id == "clock":
+            now = datetime.now()
+            main_disp.update(time_to_ascii(now.strftime("%H:%M:%S")))
+            sub_info.update("🕐 Reloj Digital")
+            status_lbl.update(now.strftime("%A, %d de %B de %Y"))
+
+    def action_toggle_start(self) -> None:
+        active_idx = self.state.get("active_mode_index", 0)
+        mode_id = self.modes[active_idx][0]
+        if mode_id == "stopwatch":
+            if self.state["stopwatch_running"]:
+                if self.state["stopwatch_start_time"]:
+                    self.state["stopwatch_elapsed"] += datetime.now() - self.state["stopwatch_start_time"]
+                self.state["stopwatch_start_time"] = None
+                self.state["stopwatch_running"] = False
+            else:
+                self.state["stopwatch_start_time"] = datetime.now()
+                self.state["stopwatch_running"] = True
+
+        elif mode_id == "pomodoro":
+            if self.state["pomodoro_running"]:
+                if self.state["pomodoro_start_time"]:
+                    elapsed = datetime.now() - self.state["pomodoro_start_time"]
+                    self.state["pomodoro_remaining"] -= elapsed
+                self.state["pomodoro_start_time"] = None
+                self.state["pomodoro_running"] = False
+            else:
+                self.state["pomodoro_start_time"] = datetime.now()
+                self.state["pomodoro_running"] = True
+
+        elif mode_id == "timer":
+            if self.state["timer_duration"].total_seconds() == 0:
+                self.action_settings()
+            elif self.state["timer_running"]:
+                if self.state["timer_start_time"]:
+                    elapsed = datetime.now() - self.state["timer_start_time"]
+                    self.state["timer_remaining"] -= elapsed
+                self.state["timer_start_time"] = None
+                self.state["timer_running"] = False
+            else:
+                self.state["timer_start_time"] = datetime.now()
+                self.state["timer_running"] = True
+                self.state["timer_finished"] = False
+
+    def action_reset(self) -> None:
+        active_idx = self.state.get("active_mode_index", 0)
+        mode_id = self.modes[active_idx][0]
+        if mode_id == "stopwatch":
+            self.state["stopwatch_running"] = False
+            self.state["stopwatch_elapsed"] = timedelta()
+            self.state["stopwatch_start_time"] = None
+
+        elif mode_id == "pomodoro":
+            self.state["pomodoro_running"] = False
+            self.state["pomodoro_is_focus"] = True
+            self.state["pomodoro_remaining"] = timedelta(minutes=self.state["pomodoro_focus_time"])
+            self.state["pomodoro_start_time"] = None
+
+        elif mode_id == "timer":
+            self.state["timer_running"] = False
+            self.state["timer_remaining"] = self.state["timer_duration"]
+            self.state["timer_start_time"] = None
+            self.state["timer_finished"] = False
+
+    def action_settings(self) -> None:
+        active_idx = self.state.get("active_mode_index", 0)
+        mode_id = self.modes[active_idx][0]
+        if mode_id == "pomodoro":
+            def on_result(result: Optional[tuple[int, int]]) -> None:
+                if result:
+                    focus, break_t = result
+                    self.state["pomodoro_focus_time"] = focus
+                    self.state["pomodoro_break_time"] = break_t
+                    self.state["pomodoro_running"] = False
+                    self.state["pomodoro_is_focus"] = True
+                    self.state["pomodoro_remaining"] = timedelta(minutes=focus)
+                    self.state["pomodoro_start_time"] = None
+                    self.update_tab_ui()
+
+            self.app.push_screen(PomodoroConfigModal(self.state["pomodoro_focus_time"], self.state["pomodoro_break_time"]), on_result)
+
+        elif mode_id == "timer":
+            curr_min = int(self.state["timer_duration"].total_seconds() // 60)
+            curr_sec = int(self.state["timer_duration"].total_seconds() % 60)
+            def on_result(result: Optional[tuple[int, int, str]]) -> None:
+                if result:
+                    minutes, seconds, name = result
+                    self.state["timer_duration"] = timedelta(minutes=minutes, seconds=seconds)
+                    self.state["timer_remaining"] = self.state["timer_duration"]
+                    self.state["timer_name"] = name
+                    self.state["timer_running"] = False
+                    self.state["timer_start_time"] = None
+                    self.state["timer_finished"] = False
+                    self.update_tab_ui()
+
+            self.app.push_screen(TimerConfigModal(curr_min, curr_sec, self.state["timer_name"]), on_result)
+
+    def action_exit_clock(self) -> None:
+        self.dismiss()
+
+    def action_quit_clock(self) -> None:
+        self.state["stopwatch_running"] = False
+        self.state["stopwatch_elapsed"] = timedelta()
+        self.state["stopwatch_start_time"] = None
+        self.state["pomodoro_running"] = False
+        self.state["pomodoro_is_focus"] = True
+        self.state["pomodoro_remaining"] = timedelta(minutes=self.state["pomodoro_focus_time"])
+        self.state["pomodoro_start_time"] = None
+        self.state["timer_running"] = False
+        self.state["timer_duration"] = timedelta()
+        self.state["timer_remaining"] = timedelta()
+        self.state["timer_start_time"] = None
+        self.state["timer_name"] = ""
+        self.state["timer_finished"] = False
+        self.dismiss()
+
+
 class TodoApp(App):
     CSS = """
     Screen { background: $background; }
@@ -9209,9 +9734,18 @@ class TodoApp(App):
         color: #00ff00;
         text-style: bold;
     }
-    #main-container { width: 100%; height: 1fr; padding: 0 2; }
-    #main-container { width: 100%; height: 1fr; padding: 0 2; }
-    #tabs-container { width: 100%; height: 3; layout: horizontal; padding: 0 1; }
+    #top-bar-container { width: 100%; height: 3; layout: horizontal; }
+    #tabs-container { width: 1fr; height: 3; layout: horizontal; overflow-x: auto; padding: 0 1; }
+    #header-clock {
+        width: 25;
+        height: 3;
+        content-align: center middle;
+        text-align: center;
+        border: solid $primary-background;
+        background: $surface;
+        color: $accent;
+        text-style: bold;
+    }
     #main-search-container { width: 100%; height: auto; padding: 0 1; margin-top: 1; margin-bottom: 1; }
     #main-search-container.hidden { display: none; }
     #main-search-label { color: $text-muted; margin-bottom: 0; margin-left: 1; }
@@ -9357,8 +9891,26 @@ class TodoApp(App):
 
         self.konami_sequence = []
         self.konami_code = ["up", "up", "down", "down", "left", "right", "left", "right", "b", "a"]
-        
         self.load_data()
+
+        self.time_tools_state = {
+            "active_mode_index": 0,
+            "stopwatch_running": False,
+            "stopwatch_elapsed": timedelta(),
+            "stopwatch_start_time": None,
+            "pomodoro_running": False,
+            "pomodoro_focus_time": 25,
+            "pomodoro_break_time": 5,
+            "pomodoro_remaining": timedelta(minutes=25),
+            "pomodoro_is_focus": True,
+            "pomodoro_start_time": None,
+            "timer_running": False,
+            "timer_duration": timedelta(),
+            "timer_remaining": timedelta(),
+            "timer_start_time": None,
+            "timer_name": "",
+            "timer_finished": False,
+        }
     
     def action_reset_filters(self) -> None:
         self.filter_dates = []
@@ -9389,7 +9941,9 @@ class TodoApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="main-container"):
-            yield Horizontal(id="tabs-container")
+            with Horizontal(id="top-bar-container"):
+                yield Horizontal(id="tabs-container")
+                yield Static("", id="header-clock")
             with Container(id="main-search-container"):
                 yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir y volver a atajos):", id="main-search-label")
                 yield UndoableInput(placeholder="Escribe para buscar...", id="main-search-input")
@@ -9408,10 +9962,52 @@ class TodoApp(App):
         self.update_stats()
         self.set_timer(0.1, self.show_today_reminders)
         self.set_interval(10, self.save_data)
+        self.set_interval(0.1, self._update_background_time_tools)
+        self._update_background_time_tools()
         try:
             self.query_one("#main-search-input", Input).blur()
         except:
             pass
+
+    def _update_background_time_tools(self) -> None:
+        state = self.time_tools_state
+        now = datetime.now()
+        try:
+            self.query_one("#header-clock", Static).update(f"🕒 {now.strftime('%d/%m/%Y %H:%M:%S')}")
+        except Exception:
+            pass
+
+        # Background Pomodoro check
+        if state["pomodoro_running"] and state["pomodoro_start_time"]:
+            elapsed = now - state["pomodoro_start_time"]
+            remaining = state["pomodoro_remaining"] - elapsed
+            if remaining.total_seconds() <= 0:
+                state["pomodoro_is_focus"] = not state["pomodoro_is_focus"]
+                if state["pomodoro_is_focus"]:
+                    state["pomodoro_remaining"] = timedelta(minutes=state["pomodoro_focus_time"])
+                else:
+                    state["pomodoro_remaining"] = timedelta(minutes=state["pomodoro_break_time"])
+                state["pomodoro_start_time"] = now
+                msg = "🎯 ¡Tiempo de FOCUS!" if state["pomodoro_is_focus"] else "☕ ¡Tiempo de DESCANSO!"
+                self.notify(msg, title="Pomodoro", timeout=10)
+
+        # Background Timer check
+        if state["timer_running"] and state["timer_start_time"]:
+            elapsed = now - state["timer_start_time"]
+            remaining = state["timer_remaining"] - elapsed
+            if remaining.total_seconds() <= 0:
+                state["timer_remaining"] = timedelta()
+                state["timer_running"] = False
+                state["timer_start_time"] = None
+                if not state["timer_finished"]:
+                    state["timer_finished"] = True
+                    name_str = state["timer_name"] if state["timer_name"] else "Temporizador"
+                    self.notify(f"⏰ ¡Tiempo de '{name_str}' terminado!", title="Temporizador", timeout=10)
+
+    def action_open_clock(self) -> None:
+        if self.main_search_focused:
+            return
+        self.push_screen(ClockModal())
 
     def on_exit(self) -> None:
         self.save_data()
@@ -12669,6 +13265,11 @@ class TodoApp(App):
             event.prevent_default()
             event.stop()
             self.action_open_snake()
+            return
+        if event.key.lower() == "ctrl+t":
+            event.prevent_default()
+            event.stop()
+            self.action_open_clock()
             return
         if self.main_search_focused:
             if event.key == "tab":
