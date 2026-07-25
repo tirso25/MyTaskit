@@ -5,11 +5,13 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, Static
 from textual.binding import Binding
-from textual import on, work
+from textual import events, on, work
 from dataclasses import dataclass
 from typing import Optional, Any
 from threading import Lock
 import json
+import random
+import time
 from pathlib import Path
 from datetime import datetime, date, timedelta
 import calendar
@@ -22,6 +24,9 @@ from rich.console import Console
 import subprocess
 import platform
 import os
+import warnings
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub")
 from textual.widgets import TextArea
 
 try:
@@ -133,6 +138,47 @@ class UndoableInput(Input):
                     pass
                 self.value = ""
                 self.cursor_position = 0
+        elif event.key == "tab":
+            widget_id = getattr(self, "id", "") or ""
+            if "search" in widget_id:
+                event.prevent_default()
+                event.stop()
+                self.blur()
+                screen = getattr(self, "screen", None)
+                if screen and hasattr(screen, "action_blur_search"):
+                    screen.action_blur_search()
+                elif hasattr(self.app, "action_blur_main_search") and widget_id == "main-search-input":
+                    self.app.action_blur_main_search()
+
+    def on_click(self, event: events.Click) -> None:
+        widget_id = getattr(self, "id", "") or ""
+        if "search" in widget_id:
+            screen = getattr(self, "screen", None)
+            if screen and hasattr(screen, "_explicit_search_focus"):
+                screen._explicit_search_focus = True
+            if screen and hasattr(screen, "search_focused"):
+                screen.search_focused = True
+            if widget_id == "main-search-input":
+                if hasattr(self.app, "_explicit_search_focus"):
+                    self.app._explicit_search_focus = True
+                if hasattr(self.app, "main_search_focused"):
+                    self.app.main_search_focused = True
+
+    def on_focus(self, event: events.Focus) -> None:
+        widget_id = getattr(self, "id", "") or ""
+        if "search" in widget_id:
+            screen = getattr(self, "screen", None)
+            target = screen if (screen and hasattr(screen, "_explicit_search_focus")) else self.app
+            if not getattr(target, "_explicit_search_focus", False):
+                self.blur()
+                return
+            target._explicit_search_focus = False
+
+    def on_blur(self, event: events.Blur) -> None:
+        widget_id = getattr(self, "id", "") or ""
+        if widget_id == "main-search-input" and hasattr(self.app, "action_blur_main_search"):
+            if getattr(self.app, "main_search_query", "") or getattr(self.app, "main_search_focused", False):
+                self.app.action_blur_main_search()
 
 class UndoableTextArea(TextArea):
     def __init__(self, *args, **kwargs):
@@ -250,6 +296,9 @@ class Subtask:
     comments: list = None
     tags: list = None
     priority: int = 0
+    notes: list = None
+    voice_notes: list = None
+    canvas_list: list = None
 
     def __post_init__(self):
         if not self.created_at:
@@ -258,6 +307,12 @@ class Subtask:
             self.comments = []
         if self.tags is None:
             self.tags = []
+        if self.notes is None:
+            self.notes = []
+        if self.voice_notes is None:
+            self.voice_notes = []
+        if self.canvas_list is None:
+            self.canvas_list = []
 
 @dataclass
 class Tag:
@@ -670,7 +725,10 @@ class SubtasksModal(ModalScreen[list]):
                                 created_at=s.created_at, due_date=s.due_date,
                                 comments=s.comments if hasattr(s, 'comments') else [],
                                 tags=s.tags if hasattr(s, 'tags') else [],
-                                priority=s.priority if hasattr(s, 'priority') else 0)
+                                priority=s.priority if hasattr(s, 'priority') else 0,
+                                notes=getattr(s, 'notes', []),
+                                voice_notes=getattr(s, 'voice_notes', []),
+                                canvas_list=getattr(s, 'canvas_list', []))
                         for s in subtasks]
         self.next_subtask_id = next_subtask_id
         self.next_comment_id = next_comment_id
@@ -766,6 +824,76 @@ class SubtasksModal(ModalScreen[list]):
         else:
             filter_status_label.update("")
 
+    def _get_ordered_subtasks(self) -> list[Subtask]:
+        filtered = self._filter_subtasks()
+        pending = [s for s in filtered if not s.done]
+        completed = [s for s in filtered if s.done]
+        return pending + completed
+
+    async def _render_subtask_row(self, subtask: Subtask, widget_id: str, is_selected: bool, container: Container) -> None:
+        item = Horizontal(id=widget_id, classes="subtask-item")
+        await container.mount(item)
+
+        checkbox = "☑" if subtask.done else "☐"
+        await item.mount(Label(checkbox, classes="subtask-checkbox"))
+
+        priority_icons = {0: "  ", 1: "[green]■[/green]", 2: "[yellow]■[/yellow]", 3: "[red]■[/red]"}
+        await item.mount(Label(priority_icons.get(subtask.priority, "  "), classes="subtask-priority"))
+
+        urgent_icon = ""
+        if not subtask.done and subtask.due_date:
+            try:
+                due_date_obj = datetime.strptime(subtask.due_date, "%Y-%m-%d").date()
+                if due_date_obj == date.today():
+                    urgent_icon = "⚠️ "
+            except: pass
+        await item.mount(Label(urgent_icon, classes="urgent-indicator"))
+
+        await item.mount(Label(subtask.text, classes="subtask-text"))
+
+        if subtask.tags:
+            for tag_id in subtask.tags:
+                tag = next((t for t in self.all_tags if t.id == tag_id), None)
+                if tag:
+                    tag_name = tag.name[:10] if len(tag.name) > 10 else tag.name
+                    await item.mount(Label(f" {tag_name} ", classes="tag"))
+                    await item.mount(Label(" ", classes="tag-separator"))
+
+        links_count = sum(1 for c in subtask.comments if c.url)
+        await item.mount(Label(f"🔗 {links_count}" if links_count > 0 else "", classes="subtask-links"))
+
+        images_count = sum(1 for c in subtask.comments if c.image_path)
+        await item.mount(Label(f"📷 {images_count}" if images_count > 0 else "", classes="subtask-images"))
+
+        files_count = sum(1 for c in subtask.comments if c.file_path)
+        await item.mount(Label(f"📎 {files_count}" if files_count > 0 else "", classes="subtask-files"))
+
+        notes_count = len(getattr(subtask, 'notes', []))
+        await item.mount(Label(f"📝 {notes_count}" if notes_count > 0 else "", classes="subtask-notes"))
+
+        audios_count = len(getattr(subtask, 'voice_notes', []))
+        await item.mount(Label(f"🎤 {audios_count}" if audios_count > 0 else "", classes="subtask-audios"))
+
+        canvas_count = len(getattr(subtask, 'canvas_list', []))
+        await item.mount(Label(f"🎨 {canvas_count}" if canvas_count > 0 else "", classes="subtask-canvas"))
+
+        comments_count = len(subtask.comments)
+        await item.mount(Label(f"💬 {comments_count}" if comments_count > 0 else "", classes="subtask-comments"))
+
+        date_str = ""
+        if subtask.due_date:
+            try:
+                d = datetime.strptime(subtask.due_date, "%Y-%m-%d")
+                date_str = f"{d.day:02d}/{d.month:02d}"
+            except: pass
+        await item.mount(Label(date_str, classes="subtask-date"))
+
+        if subtask.done:
+            item.add_class("done")
+
+        if is_selected:
+            item.add_class("selected")
+
     async def refresh_subtasks_list(self) -> None:
         subtasks_list = self.query_one("#subtasks-list", Container)
         await subtasks_list.remove_children()
@@ -773,6 +901,7 @@ class SubtasksModal(ModalScreen[list]):
         self._update_filter_status()
 
         filtered_subtasks = self._filter_subtasks()
+        ordered_subtasks = self._get_ordered_subtasks()
 
         if not self.subtasks:
             await subtasks_list.mount(Label("No hay subtareas. Pulsa 'a' para añadir una.", classes="empty-msg"))
@@ -781,105 +910,63 @@ class SubtasksModal(ModalScreen[list]):
             await subtasks_list.mount(Label("No hay subtareas que coincidan con los filtros", classes="empty-msg"))
             self.selected_index = -1
         else:
-            if self.selected_index >= len(filtered_subtasks):
-                self.selected_index = max(0, len(filtered_subtasks) - 1)
+            if self.selected_index >= len(ordered_subtasks):
+                self.selected_index = max(0, len(ordered_subtasks) - 1)
 
-            for i, subtask in enumerate(filtered_subtasks):
-                item = Horizontal(id=f"subtask-{i}", classes="subtask-item")
-                await subtasks_list.mount(item)
+            pending = [s for s in filtered_subtasks if not s.done]
+            completed = [s for s in filtered_subtasks if s.done]
 
-                checkbox = "☑" if subtask.done else "☐"
-                await item.mount(Label(checkbox, classes="subtask-checkbox"))
+            for s in pending:
+                idx = filtered_subtasks.index(s)
+                is_sel = (ordered_subtasks.index(s) == self.selected_index)
+                await self._render_subtask_row(s, f"subtask-{idx}", is_sel, subtasks_list)
 
-                priority_icons = {
-                    0: "  ",
-                    1: "[green]■[/green]",
-                    2: "[yellow]■[/yellow]",
-                    3: "[red]■[/red]"
-                }
-                priority_icon = priority_icons.get(subtask.priority, "  ")
-                await item.mount(Label(priority_icon, classes="subtask-priority"))
-
-                urgent_icon = ""
-                if not subtask.done and subtask.due_date:
-                    try:
-                        due_date_obj = datetime.strptime(subtask.due_date, "%Y-%m-%d").date()
-                        if due_date_obj == date.today():
-                            urgent_icon = "⚠️ "
-                    except: pass
-                await item.mount(Label(urgent_icon, classes="urgent-indicator"))
-
-                await item.mount(Label(subtask.text, classes="subtask-text"))
-
-                if subtask.tags:
-                    for tag_id in subtask.tags:
-                        tag = next((t for t in self.all_tags if t.id == tag_id), None)
-                        if tag:
-                            tag_name = tag.name[:10] if len(tag.name) > 10 else tag.name
-                            await item.mount(Label(f" {tag_name} ", classes="tag"))
-                            await item.mount(Label(" ", classes="tag-separator"))
-
-                links_count = sum(1 for c in subtask.comments if c.url)
-                links_str = f"🔗 {links_count}" if links_count > 0 else ""
-                await item.mount(Label(links_str, classes="subtask-links"))
-
-                images_count = sum(1 for c in subtask.comments if c.image_path)
-                images_str = f"📷 {images_count}" if images_count > 0 else ""
-                await item.mount(Label(images_str, classes="subtask-images"))
-
-                files_count = sum(1 for c in subtask.comments if c.file_path)
-                files_str = f"📎 {files_count}" if files_count > 0 else ""
-                await item.mount(Label(files_str, classes="subtask-files"))
-
-                comments_count = len(subtask.comments)
-                comments_str = f"💬 {comments_count}" if comments_count > 0 else ""
-                await item.mount(Label(comments_str, classes="subtask-comments"))
-
-                date_str = ""
-                if subtask.due_date:
-                    try:
-                        d = datetime.strptime(subtask.due_date, "%Y-%m-%d")
-                        date_str = f"{d.day:02d}/{d.month:02d}"
-                    except: pass
-                await item.mount(Label(date_str, classes="subtask-date"))
-
-                if subtask.done:
-                    item.add_class("done")
-
-                if i == self.selected_index:
-                    item.add_class("selected")
+            if completed:
+                await subtasks_list.mount(Static("── Completadas ──", id="completed-separator"))
+                for s in completed:
+                    idx = filtered_subtasks.index(s)
+                    is_sel = (ordered_subtasks.index(s) == self.selected_index)
+                    await self._render_subtask_row(s, f"subtask-{idx}", is_sel, subtasks_list)
 
             self.scroll_to_selected()
     
     def scroll_to_selected(self) -> None:
         if self.selected_index >= 0:
-            try:
-                item = self.query_one(f"#subtask-{self.selected_index}", Horizontal)
-                item.scroll_visible()
-            except: pass
+            ordered = self._get_ordered_subtasks()
+            if 0 <= self.selected_index < len(ordered):
+                subtask = ordered[self.selected_index]
+                filtered = self._filter_subtasks()
+                if subtask in filtered:
+                    orig_idx = filtered.index(subtask)
+                    try:
+                        item = self.query_one(f"#subtask-{orig_idx}", Horizontal)
+                        item.scroll_visible()
+                    except: pass
     
     def update_selection(self) -> None:
-        filtered_subtasks = self._filter_subtasks()
-        for i in range(len(filtered_subtasks)):
+        filtered = self._filter_subtasks()
+        ordered = self._get_ordered_subtasks()
+        for idx, subtask in enumerate(ordered):
             try:
-                item = self.query_one(f"#subtask-{i}", Horizontal)
-                item.set_class(i == self.selected_index, "selected")
+                orig_idx = filtered.index(subtask)
+                item = self.query_one(f"#subtask-{orig_idx}", Horizontal)
+                item.set_class(idx == self.selected_index, "selected")
             except: pass
         self.scroll_to_selected()
 
     def action_move_up(self) -> None:
         if self.search_focused:
             return
-        filtered_subtasks = self._filter_subtasks()
-        if filtered_subtasks and self.selected_index > 0:
+        ordered = self._get_ordered_subtasks()
+        if ordered and self.selected_index > 0:
             self.selected_index -= 1
             self.update_selection()
 
     def action_move_down(self) -> None:
         if self.search_focused:
             return
-        filtered_subtasks = self._filter_subtasks()
-        if filtered_subtasks and self.selected_index < len(filtered_subtasks) - 1:
+        ordered = self._get_ordered_subtasks()
+        if ordered and self.selected_index < len(ordered) - 1:
             self.selected_index += 1
             self.update_selection()
     
@@ -898,10 +985,10 @@ class SubtasksModal(ModalScreen[list]):
     def action_edit_subtask(self) -> None:
         if self.search_focused:
             return
-        filtered_subtasks = self._filter_subtasks()
-        if not filtered_subtasks or self.selected_index < 0 or self.selected_index >= len(filtered_subtasks):
+        ordered = self._get_ordered_subtasks()
+        if not ordered or self.selected_index < 0 or self.selected_index >= len(ordered):
             return
-        subtask = filtered_subtasks[self.selected_index]
+        subtask = ordered[self.selected_index]
 
         next_comment_id = self.next_comment_id
         if subtask.comments:
@@ -914,6 +1001,9 @@ class SubtasksModal(ModalScreen[list]):
                 subtask.tags = result.get("tags", [])
                 subtask.priority = result.get("priority", 0)
                 subtask.due_date = result.get("due_date", "")
+                subtask.notes = result.get("notes", [])
+                subtask.voice_notes = result.get("voice_notes", [])
+                subtask.canvas_list = result.get("canvas_list", [])
                 if subtask.comments:
                     self.next_comment_id = max(c.id for c in subtask.comments) + 1
                 self.call_later(self.refresh_subtasks_list)
@@ -921,23 +1011,29 @@ class SubtasksModal(ModalScreen[list]):
         self.app.push_screen(
             EditSubtaskModal(subtask.text, subtask.comments, next_comment_id,
                            all_tags=self.all_tags, selected_tags=subtask.tags,
-                           priority=subtask.priority, due_date=subtask.due_date),
+                           priority=subtask.priority, due_date=subtask.due_date,
+                           notes=getattr(subtask, 'notes', []),
+                           voice_notes=getattr(subtask, 'voice_notes', []),
+                           canvas_list=getattr(subtask, 'canvas_list', []),
+                           global_notes=getattr(self.app, 'notes', []),
+                           global_voice_notes=getattr(self.app, 'voice_notes', []),
+                           global_canvas_list=getattr(self.app, 'canvas_list', [])),
             on_result
         )
     
     def action_delete_subtask(self) -> None:
         if self.search_focused:
             return
-        filtered_subtasks = self._filter_subtasks()
-        if not filtered_subtasks or self.selected_index < 0 or self.selected_index >= len(filtered_subtasks):
+        ordered = self._get_ordered_subtasks()
+        if not ordered or self.selected_index < 0 or self.selected_index >= len(ordered):
             return
-        subtask = filtered_subtasks[self.selected_index]
+        subtask = ordered[self.selected_index]
         txt = subtask.text[:30] + "..." if len(subtask.text) > 30 else subtask.text
         def on_confirm(yes: bool) -> None:
             if yes:
                 self.subtasks.remove(subtask)
-                filtered_subtasks = self._filter_subtasks()
-                if self.selected_index >= len(filtered_subtasks) and self.selected_index > 0:
+                ordered = self._get_ordered_subtasks()
+                if self.selected_index >= len(ordered) and self.selected_index > 0:
                     self.selected_index -= 1
                 if not self.subtasks:
                     self.selected_index = -1
@@ -947,10 +1043,10 @@ class SubtasksModal(ModalScreen[list]):
     def action_toggle_subtask(self) -> None:
         if self.search_focused:
             return
-        filtered_subtasks = self._filter_subtasks()
-        if not filtered_subtasks or self.selected_index < 0 or self.selected_index >= len(filtered_subtasks):
+        ordered = self._get_ordered_subtasks()
+        if not ordered or self.selected_index < 0 or self.selected_index >= len(ordered):
             return
-        subtask = filtered_subtasks[self.selected_index]
+        subtask = ordered[self.selected_index]
         subtask.done = not subtask.done
         self.call_later(self.refresh_subtasks_list)
 
@@ -994,15 +1090,22 @@ class SubtasksModal(ModalScreen[list]):
 
     def action_focus_search(self) -> None:
         self.search_focused = True
-        self.query_one("#search-input", Input).focus()
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#search-input", Input).focus()
+        except: pass
 
     def action_blur_search(self) -> None:
+        self.search_query = ""
         self.search_focused = False
+        self._explicit_search_focus = False
         try:
-            self.query_one("#search-input", Input).blur()
-        except:
-            pass
+            inp = self.query_one("#search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
         self.set_focus(None)
+        self.call_later(self.refresh_subtasks_list)
 
     @on(Input.Changed, "#search-input")
     async def on_search_changed(self, event: Input.Changed) -> None:
@@ -1011,8 +1114,14 @@ class SubtasksModal(ModalScreen[list]):
         await self.refresh_subtasks_list()
 
     @on(Input.Submitted, "#search-input")
-    def on_search_submitted(self) -> None:
+    def on_search_submitted(self, event: Input.Submitted) -> None:
         self.action_blur_search()
+
+    def action_close(self) -> None:
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(self.subtasks)
     
     @on(Button.Pressed, "#add")
     def on_add(self) -> None:
@@ -1033,20 +1142,14 @@ class UnscheduledItemsModal(ModalScreen[Optional[dict]]):
     DEFAULT_CSS = """
     UnscheduledItemsModal { align: center middle; }
     UnscheduledItemsModal > VerticalScroll {
-        width: 80; height: 32; border: thick $primary;
+        width: 80; height: 36; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     UnscheduledItemsModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
+    UnscheduledItemsModal .search-label { color: $text-muted; margin-bottom: 0; }
+    UnscheduledItemsModal Input { width: 100%; margin-bottom: 1; }
     UnscheduledItemsModal .info-text { width: 100%; text-align: center; color: $text-muted; margin-bottom: 1; }
-    UnscheduledItemsModal .section-header { 
-        width: 100%; 
-        text-align: left; 
-        text-style: bold; 
-        color: $accent;
-        margin: 1 0;
-        padding: 0 1;
-    }
-    UnscheduledItemsModal #items-list { width: 100%; height: 18; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    UnscheduledItemsModal #items-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
     UnscheduledItemsModal .item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
@@ -1068,153 +1171,184 @@ class UnscheduledItemsModal(ModalScreen[Optional[dict]]):
         Binding("space", "toggle_item", show=False),
         Binding("enter", "save", show=False),
         Binding("ctrl+s", "save", show=False, priority=True),
+        Binding("/", "focus_search", show=False),
     ]
     
     def __init__(self, tasks: list[Task], all_groups: list[Group], **kwargs) -> None:
         super().__init__(**kwargs)
         self.all_groups = all_groups
-        
-        self.items = []
+        self.all_items = []
         
         for task in tasks:
             if task.due_date is None and not task.done:
                 group_name = self._get_group_name(task.group_id)
-                self.items.append(("task", task.id, None, task.text, group_name))
+                self.all_items.append(("task", task.id, None, task.text, group_name))
             
             for subtask in task.subtasks:
                 if subtask.due_date is None and not subtask.done:
-                    self.items.append(("subtask", task.id, subtask.id, subtask.text, task.text))
+                    self.all_items.append(("subtask", task.id, subtask.id, subtask.text, task.text))
         
         self.selected_item_ids = []
-        self.selected_index = 0 if self.items else -1
-    
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        self.filtered_items = []
+        self.selected_index = 0 if self.all_items else -1
+
+    def _get_filtered_items(self) -> list:
+        if not self.search_query:
+            return self.all_items
+        q = self.search_query.lower()
+        return [item for item in self.all_items if q in item[3].lower() or (item[4] and q in item[4].lower())]
+
     def _get_group_name(self, group_id: Optional[int]) -> str:
         if group_id is None:
             return "Sin grupo"
         group = next((g for g in self.all_groups if g.id == group_id), None)
         return group.name if group else "Sin grupo"
-    
+
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("📅 Asignar fecha desde calendario", classes="modal-title")
-            yield Label("Selecciona tareas y/o subtareas para asignarles la fecha del calendario", classes="info-text")
+            yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir):", classes="search-label")
+            yield UndoableInput(placeholder="Escribe para buscar tareas/subtareas...", id="ui-search-input")
             yield Container(id="items-list")
-            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | Enter: Asignar fecha | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | /: Buscar | Enter: Asignar fecha | Esc: Cancelar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("Asignar fecha", variant="primary", id="save")
                 yield Button("Cancelar", variant="default", id="cancel")
-    
+
     async def on_mount(self) -> None:
         await self.refresh_list()
-    
+        try:
+            self.query_one("#ui-search-input", Input).blur()
+        except: pass
+
     async def refresh_list(self) -> None:
         items_list = self.query_one("#items-list", Container)
         await items_list.remove_children()
         
-        if not self.items:
+        self.filtered_items = self._get_filtered_items()
+        
+        if not self.all_items:
             await items_list.mount(Label("No hay tareas ni subtareas sin fecha pendientes", classes="empty-msg"))
             self.selected_index = -1
             return
+        elif not self.filtered_items:
+            await items_list.mount(Label(f"No se encontraron elementos para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
+            return
         
-        tasks_items = [item for item in self.items if item[0] == "task"]
-        subtasks_items = [item for item in self.items if item[0] == "subtask"]
-        
-        current_index = 0
-        
-        if tasks_items:
-            await items_list.mount(Static("📋 Tareas:", classes="section-header"))
-            for item_type, task_id, subtask_id, text, parent_text in tasks_items:
-                checked = "☑" if (item_type, task_id, subtask_id) in self.selected_item_ids else "☐"
-                text_display = text[:35] + "..." if len(text) > 35 else text
-                padding = " " * max(1, 50 - len(text_display) - len(parent_text))
-                display_text = f"{checked}  {text_display}{padding}📁 {parent_text}"
-                
-                item = Static(display_text, id=f"item-{current_index}", classes="item")
-                await items_list.mount(item)
-                if (item_type, task_id, subtask_id) in self.selected_item_ids:
-                    item.add_class("checked")
-                if current_index == self.selected_index:
-                    item.add_class("selected")
-                current_index += 1
-        
-        if subtasks_items:
-            await items_list.mount(Static("📝 Subtareas:", classes="section-header"))
-            for item_type, task_id, subtask_id, text, parent_text in subtasks_items:
-                checked = "☑" if (item_type, task_id, subtask_id) in self.selected_item_ids else "☐"
-                text_display = text[:35] + "..." if len(text) > 35 else text
-                parent_display = parent_text[:20] + "..." if len(parent_text) > 20 else parent_text
-                padding = " " * max(1, 40 - len(text_display) - len(parent_display))
-                display_text = f"{checked}  ↳ {text_display}{padding}🔗 {parent_display}"
-                
-                item = Static(display_text, id=f"item-{current_index}", classes="item")
-                await items_list.mount(item)
-                if (item_type, task_id, subtask_id) in self.selected_item_ids:
-                    item.add_class("checked")
-                if current_index == self.selected_index:
-                    item.add_class("selected")
-                current_index += 1
-        
-        self.scroll_to_selected()
-    
-    def scroll_to_selected(self) -> None:
-        if self.selected_index >= 0:
-            try:
-                item = self.query_one(f"#item-{self.selected_index}", Static)
-                item.scroll_visible()
-            except: pass
-    
+        if self.selected_index >= len(self.filtered_items) or self.selected_index < 0:
+            self.selected_index = 0
+            
+        for i, item_data in enumerate(self.filtered_items):
+            item_type, task_id, subtask_id, text, extra_info = item_data
+            item_key = (task_id, subtask_id)
+            checked = "☑" if item_key in self.selected_item_ids else "☐"
+            
+            if item_type == "task":
+                prefix = "📋 Tarea:"
+                extra = f" 📁 {extra_info}"
+            else:
+                prefix = "└─ 📋 Subtarea:"
+                extra = f" (Tarea: {extra_info[:25]}...)" if len(extra_info) > 25 else f" (Tarea: {extra_info})"
+            
+            truncated_text = text[:35] + "..." if len(text) > 35 else text
+            display_text = f"{checked}  {prefix} {truncated_text}{extra}"
+            
+            item_widget = Static(display_text, id=f"item-{i}", classes="item")
+            await items_list.mount(item_widget)
+            if item_key in self.selected_item_ids:
+                item_widget.add_class("checked")
+            if i == self.selected_index:
+                item_widget.add_class("selected")
+
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#ui-search-input", Input).focus()
+        except: pass
+
+    def action_blur_search(self) -> None:
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        try:
+            inp = self.query_one("#ui-search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
+        self.set_focus(None)
+        self.call_later(self.refresh_list)
+
+    @on(Input.Changed, "#ui-search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_list()
+
+    @on(Input.Submitted, "#ui-search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
+    def action_move_up(self) -> None:
+        if self.search_focused: return
+        if self.filtered_items and self.selected_index > 0:
+            self.selected_index -= 1
+            self.update_selection()
+
+    def action_move_down(self) -> None:
+        if self.search_focused: return
+        if self.filtered_items and self.selected_index < len(self.filtered_items) - 1:
+            self.selected_index += 1
+            self.update_selection()
+
+    def action_toggle_item(self) -> None:
+        if self.search_focused: return
+        if self.filtered_items and 0 <= self.selected_index < len(self.filtered_items):
+            item_data = self.filtered_items[self.selected_index]
+            item_key = (item_data[1], item_data[2])
+            if item_key in self.selected_item_ids:
+                self.selected_item_ids.remove(item_key)
+            else:
+                self.selected_item_ids.append(item_key)
+            self.call_later(self.refresh_list)
+
     def update_selection(self) -> None:
-        for i in range(len(self.items)):
+        for i in range(len(self.filtered_items)):
             try:
                 item = self.query_one(f"#item-{i}", Static)
                 item.set_class(i == self.selected_index, "selected")
-            except: pass
-        self.scroll_to_selected()
-    
-    def action_move_up(self) -> None:
-        if self.items and self.selected_index > 0:
-            self.selected_index -= 1
-            self.update_selection()
-    
-    def action_move_down(self) -> None:
-        if self.items and self.selected_index < len(self.items) - 1:
-            self.selected_index += 1
-            self.update_selection()
-    
-    def action_toggle_item(self) -> None:
-        if not self.items or self.selected_index < 0:
-            return
-        item_type, task_id, subtask_id, text, parent_text = self.items[self.selected_index]
-        item_id = (item_type, task_id, subtask_id)
-        if item_id in self.selected_item_ids:
-            self.selected_item_ids.remove(item_id)
-        else:
-            self.selected_item_ids.append(item_id)
-        self.call_later(self.refresh_list)
-    
+            except Exception: pass
+
     def action_save(self) -> None:
-        if not self.selected_item_ids:
-            self.dismiss(None)
+        if self.search_focused:
+            self.action_blur_search()
             return
-        
-        task_ids = [task_id for item_type, task_id, subtask_id in self.selected_item_ids if item_type == "task"]
-        subtask_selections = [(task_id, subtask_id) for item_type, task_id, subtask_id in self.selected_item_ids if item_type == "subtask"]
-        
-        self.dismiss({
-            "task_ids": task_ids,
-            "subtask_selections": subtask_selections
-        })
-    
+        selected_tasks = []
+        selected_subtasks = []
+        for task_id, subtask_id in self.selected_item_ids:
+            if subtask_id is None:
+                selected_tasks.append(task_id)
+            else:
+                selected_subtasks.append((task_id, subtask_id))
+        self.dismiss({"task_ids": selected_tasks, "subtask_ids": selected_subtasks})
+
+    def action_cancel(self) -> None:
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(None)
+
     @on(Button.Pressed, "#save")
     def on_save_btn(self) -> None:
         self.action_save()
-    
+
     @on(Button.Pressed, "#cancel")
     def on_cancel_btn(self) -> None:
-        self.dismiss(None)
-    
-    def action_cancel(self) -> None:
-        self.dismiss(None)
+        self.action_cancel()
         
     def on_key(self, event) -> None:
         if event.key == "ctrl+s":
@@ -1745,7 +1879,10 @@ class EditSubtaskModal(ModalScreen[Optional[dict]]):
 
     def __init__(self, subtask_text: str, comments: list[Comment] = None,
                  next_comment_id: int = 1, all_tags: list = None,
-                 selected_tags: list = None, priority: int = 0, due_date: str = "", **kwargs) -> None:
+                 selected_tags: list = None, priority: int = 0, due_date: str = "",
+                 notes: list[Note] = None, voice_notes: list[VoiceNote] = None, canvas_list: list[Canvas] = None,
+                 next_note_id: int = 1, next_voice_note_id: int = 1, next_canvas_id: int = 1,
+                 global_notes: list = None, global_voice_notes: list = None, global_canvas_list: list = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.subtask_text = subtask_text
         self.comments = comments or []
@@ -1754,6 +1891,15 @@ class EditSubtaskModal(ModalScreen[Optional[dict]]):
         self.selected_tags = selected_tags or []
         self.priority = priority
         self.due_date = due_date
+        self.notes = list(notes) if notes else []
+        self.voice_notes = list(voice_notes) if voice_notes else []
+        self.canvas_list = list(canvas_list) if canvas_list else []
+        self.next_note_id = next_note_id
+        self.next_voice_note_id = next_voice_note_id
+        self.next_canvas_id = next_canvas_id
+        self.global_notes = global_notes or []
+        self.global_voice_notes = global_voice_notes or []
+        self.global_canvas_list = global_canvas_list or []
     
     def compose(self) -> ComposeResult:
         with VerticalScroll():
@@ -1780,6 +1926,21 @@ class EditSubtaskModal(ModalScreen[Optional[dict]]):
             with Horizontal(classes="comments-row"):
                 yield Label(self._format_comments(), id="comments-display", classes="comments-display")
                 yield Button("💬 Gestionar", id="manage-comments")
+
+            yield Label("Notas:", classes="section-label")
+            with Horizontal(classes="info-row"):
+                yield Label(self._format_notes(), id="notes-display", classes="info-display")
+                yield Button("📌 Seleccionar", id="select-notes")
+
+            yield Label("Audios:", classes="section-label")
+            with Horizontal(classes="info-row"):
+                yield Label(self._format_voice_notes(), id="voice-notes-display", classes="info-display")
+                yield Button("📌 Seleccionar", id="select-voice-notes")
+
+            yield Label("Pizarras:", classes="section-label")
+            with Horizontal(classes="info-row"):
+                yield Label(self._format_canvas(), id="canvas-display", classes="info-display")
+                yield Button("📌 Seleccionar", id="select-canvas")
 
             with Horizontal(classes="button-row"):
                 yield Button("Guardar", variant="primary", id="save")
@@ -1817,6 +1978,24 @@ class EditSubtaskModal(ModalScreen[Optional[dict]]):
         else:
             return f"💬 {count} comentarios"
 
+    def _format_notes(self) -> str:
+        count = len(self.notes)
+        if count == 0: return "Sin notas"
+        elif count == 1: return "📝 1 nota"
+        else: return f"📝 {count} notas"
+
+    def _format_voice_notes(self) -> str:
+        count = len(self.voice_notes)
+        if count == 0: return "Sin audios"
+        elif count == 1: return "🎤 1 audio"
+        else: return f"🎤 {count} audios"
+
+    def _format_canvas(self) -> str:
+        count = len(self.canvas_list)
+        if count == 0: return "Sin pizarras"
+        elif count == 1: return "🎨 1 pizarra"
+        else: return f"🎨 {count} pizarras"
+
     def on_mount(self) -> None:
         self.query_one("#subtask-input", Input).focus()
 
@@ -1853,6 +2032,42 @@ class EditSubtaskModal(ModalScreen[Optional[dict]]):
             self.query_one("#comments-display", Label).update(self._format_comments())
         self.app.push_screen(CommentsModal(self.comments, self.next_comment_id), on_result)
 
+    @on(Button.Pressed, "#select-notes")
+    def on_select_notes(self) -> None:
+        def on_result(result: Optional[list[Note]]) -> None:
+            if result is not None:
+                self.notes = result
+                if self.notes:
+                    self.next_note_id = max((n.id for n in self.notes), default=0) + 1
+                self.query_one("#notes-display", Label).update(self._format_notes())
+        global_notes = self.global_notes or getattr(self.app, "notes", [])
+        current_ids = [n.id for n in self.notes]
+        self.app.push_screen(GlobalNotesPickerModal(global_notes, selected_note_ids=current_ids), on_result)
+
+    @on(Button.Pressed, "#select-voice-notes")
+    def on_select_voice_notes(self) -> None:
+        def on_result(result: Optional[list[VoiceNote]]) -> None:
+            if result is not None:
+                self.voice_notes = result
+                if self.voice_notes:
+                    self.next_voice_note_id = max((v.id for v in self.voice_notes), default=0) + 1
+                self.query_one("#voice-notes-display", Label).update(self._format_voice_notes())
+        global_vn = self.global_voice_notes or getattr(self.app, "voice_notes", [])
+        current_ids = [v.id for v in self.voice_notes]
+        self.app.push_screen(GlobalVoiceNotesPickerModal(global_vn, selected_vn_ids=current_ids), on_result)
+
+    @on(Button.Pressed, "#select-canvas")
+    def on_select_canvas(self) -> None:
+        def on_result(result: Optional[list[Canvas]]) -> None:
+            if result is not None:
+                self.canvas_list = result
+                if self.canvas_list:
+                    self.next_canvas_id = max((c.id for c in self.canvas_list), default=0) + 1
+                self.query_one("#canvas-display", Label).update(self._format_canvas())
+        global_canvas = self.global_canvas_list or getattr(self.app, "canvas_list", [])
+        current_ids = [c.id for c in self.canvas_list]
+        self.app.push_screen(GlobalCanvasPickerModal(global_canvas, selected_canvas_ids=current_ids), on_result)
+
     @on(Button.Pressed, "#save")
     def on_save(self) -> None:
         self.action_save()
@@ -1868,7 +2083,10 @@ class EditSubtaskModal(ModalScreen[Optional[dict]]):
             "comments": self.comments,
             "tags": self.selected_tags,
             "priority": self.priority,
-            "due_date": self.due_date
+            "due_date": self.due_date,
+            "notes": self.notes,
+            "voice_notes": self.voice_notes,
+            "canvas_list": self.canvas_list
         })
     
     @on(Button.Pressed, "#cancel")
@@ -1887,6 +2105,100 @@ class EditSubtaskModal(ModalScreen[Optional[dict]]):
             event.prevent_default()
             event.stop()
             self.action_save()
+
+class SubtaskRowWidget(Static):
+    DEFAULT_CSS = """
+    SubtaskRowWidget {
+        width: 100%;
+        height: 3;
+        padding: 0 1;
+        border: solid $primary-background;
+        margin-bottom: 1;
+        layout: horizontal;
+    }
+    SubtaskRowWidget:hover { background: $boost; }
+    SubtaskRowWidget.selected { border: solid $accent; background: $surface-lighten-1; }
+    SubtaskRowWidget.done .subtask-text { text-style: strike; color: $text-muted; }
+    SubtaskRowWidget .subtask-checkbox { width: 4; height: 1; }
+    SubtaskRowWidget .subtask-priority { width: 3; height: 1; }
+    SubtaskRowWidget .subtask-parent { width: auto; max-width: 25; height: 1; color: $accent; margin-right: 1; text-style: bold; }
+    SubtaskRowWidget .subtask-text { width: 1fr; height: 1; }
+    SubtaskRowWidget .subtask-notes { width: 5; height: 1; text-align: right; color: $success; }
+    SubtaskRowWidget .subtask-audios { width: 5; height: 1; text-align: right; color: $primary; }
+    SubtaskRowWidget .subtask-canvas { width: 5; height: 1; text-align: right; color: $warning; }
+    SubtaskRowWidget .subtask-comments { width: 5; height: 1; text-align: right; color: $primary; }
+    SubtaskRowWidget .subtask-date { width: 8; height: 1; text-align: right; color: $warning; }
+    """
+
+    def __init__(self, subtask: Subtask, parent_task: Task = None, all_tags: list = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.subtask = subtask
+        self.parent_task = parent_task
+        self.all_tags = all_tags or []
+        self._selected = False
+
+    @property
+    def selected(self) -> bool:
+        return self._selected
+
+    @selected.setter
+    def selected(self, value: bool) -> None:
+        self._selected = value
+        self.set_class(value, "selected")
+
+    def compose(self) -> ComposeResult:
+        checkbox = "☑" if self.subtask.done else "☐"
+        yield Label(checkbox, classes="subtask-checkbox")
+
+        priority_icons = {0: "  ", 1: "[green]■[/green]", 2: "[yellow]■[/yellow]", 3: "[red]■[/red]"}
+        yield Label(priority_icons.get(self.subtask.priority, "  "), classes="subtask-priority")
+
+        if self.parent_task:
+            p_txt = self.parent_task.text[:18] + "..." if len(self.parent_task.text) > 18 else self.parent_task.text
+            yield Label(f"📁 {p_txt}: ", classes="subtask-parent")
+
+        yield Label(self.subtask.text, classes="subtask-text")
+
+        if self.subtask.tags:
+            for tag_id in self.subtask.tags:
+                tag = next((t for t in self.all_tags if t.id == tag_id), None)
+                if tag:
+                    t_name = tag.name[:10] if len(tag.name) > 10 else tag.name
+                    yield Label(f" {t_name} ", classes="tag")
+                    yield Label(" ", classes="tag-separator")
+
+        notes_count = len(getattr(self.subtask, 'notes', []))
+        yield Label(f"📝{notes_count}" if notes_count > 0 else "", classes="subtask-notes")
+
+        audios_count = len(getattr(self.subtask, 'voice_notes', []))
+        yield Label(f"🎤{audios_count}" if audios_count > 0 else "", classes="subtask-audios")
+
+        canvas_count = len(getattr(self.subtask, 'canvas_list', []))
+        yield Label(f"🎨{canvas_count}" if canvas_count > 0 else "", classes="subtask-canvas")
+
+        comments_count = len(self.subtask.comments)
+        yield Label(f"💬{comments_count}" if comments_count > 0 else "", classes="subtask-comments")
+
+        date_str = ""
+        if self.subtask.due_date:
+            try:
+                d = datetime.strptime(self.subtask.due_date, "%Y-%m-%d")
+                date_str = f"{d.day:02d}/{d.month:02d}"
+            except: pass
+        yield Label(date_str, classes="subtask-date")
+
+    def on_mount(self) -> None:
+        if self.subtask.done:
+            self.add_class("done")
+
+    def toggle_done(self) -> None:
+        self.subtask.done = not self.subtask.done
+        self.set_class(self.subtask.done, "done")
+        try:
+            checkbox_label = self.query_one(".subtask-checkbox", Label)
+            checkbox_label.update("☑" if self.subtask.done else "☐")
+        except Exception:
+            pass
 
 class TaskWidget(Static):
     DEFAULT_CSS = """
@@ -2844,10 +3156,12 @@ class GroupPickerModal(ModalScreen[Optional[int]]):
     DEFAULT_CSS = """
     GroupPickerModal { align: center middle; }
     GroupPickerModal > VerticalScroll {
-        width: 50; height: auto; max-height: 20; border: thick $primary;
+        width: 55; height: auto; max-height: 25; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     GroupPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; margin-bottom: 1; }
+    GroupPickerModal .search-label { color: $text-muted; margin-bottom: 0; }
+    GroupPickerModal Input { width: 100%; margin-bottom: 1; }
     GroupPickerModal #groups-list { width: 100%; height: auto; max-height: 12; overflow-y: auto; }
     GroupPickerModal .group-item {
         width: 100%; height: 3; padding: 0 1;
@@ -2856,6 +3170,7 @@ class GroupPickerModal(ModalScreen[Optional[int]]):
     }
     GroupPickerModal .group-item:hover { background: $boost; }
     GroupPickerModal .group-item.selected { border: solid $accent; background: $surface-lighten-1; }
+    GroupPickerModal .empty-msg { width: 100%; text-align: center; color: $text-muted; text-style: italic; padding: 2; }
     GroupPickerModal .hint { width: 100%; text-align: center; color: $text-muted; margin-top: 1; }
     """
     BINDINGS = [
@@ -2865,60 +3180,120 @@ class GroupPickerModal(ModalScreen[Optional[int]]):
         Binding("k", "move_up", show=False),
         Binding("j", "move_down", show=False),
         Binding("enter", "select_group", show=False),
+        Binding("/", "focus_search", show=False),
     ]
     
     def __init__(self, groups: list[Group], current_group_id: Optional[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.groups = groups
         self.current_group_id = current_group_id
-        self.options: list[Optional[int]] = [None] + [g.id for g in groups]
-        if current_group_id is None:
-            self.selected_index = 0
-        else:
-            try:
-                self.selected_index = self.options.index(current_group_id)
-            except ValueError:
-                self.selected_index = 0
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        self.filtered_items: list[tuple[str, Optional[int]]] = []
+        self.selected_index = 0
     
+    def _get_filtered_items(self) -> list[tuple[str, Optional[int]]]:
+        all_items: list[tuple[str, Optional[int]]] = [("📋 Sin grupo", None)] + [(f"📁 {g.name}", g.id) for g in self.groups]
+        if not self.search_query:
+            return all_items
+        q = self.search_query.lower()
+        return [item for item in all_items if q in item[0].lower()]
+
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("📁 Seleccionar Grupo", classes="modal-title")
+            yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir):", classes="search-label")
+            yield UndoableInput(placeholder="Escribe para buscar grupo...", id="group-search-input")
             yield Container(id="groups-list")
-            yield Label("↑↓ Navegar | Enter: Seleccionar | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | Enter: Seleccionar | /: Buscar | Esc: Cancelar", classes="hint")
     
     async def on_mount(self) -> None:
+        await self.refresh_groups_list()
+        try:
+            self.query_one("#group-search-input", Input).blur()
+        except:
+            pass
+
+    async def refresh_groups_list(self) -> None:
         groups_list = self.query_one("#groups-list", Container)
+        await groups_list.remove_children()
         
-        item = Static("📋 Sin grupo", id="group-item-0", classes="group-item")
-        await groups_list.mount(item)
-        if self.selected_index == 0:
-            item.add_class("selected")
+        self.filtered_items = self._get_filtered_items()
         
-        for i, group in enumerate(self.groups):
-            item = Static(f"📁 {group.name}", id=f"group-item-{i+1}", classes="group-item")
-            await groups_list.mount(item)
-            if self.selected_index == i + 1:
-                item.add_class("selected")
+        if not self.filtered_items:
+            await groups_list.mount(Label(f"No se encontraron grupos para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
+        else:
+            if self.selected_index >= len(self.filtered_items) or self.selected_index < 0:
+                self.selected_index = 0
+            
+            for i, (label, gid) in enumerate(self.filtered_items):
+                item = Static(label, id=f"group-item-{i}", classes="group-item")
+                await groups_list.mount(item)
+                if i == self.selected_index:
+                    item.add_class("selected")
     
     def update_selection(self) -> None:
-        for i in range(len(self.options)):
+        for i in range(len(self.filtered_items)):
             try:
                 item = self.query_one(f"#group-item-{i}", Static)
                 item.set_class(i == self.selected_index, "selected")
             except: pass
     
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self._explicit_search_focus = True
+        try:
+            inp = self.query_one("#group-search-input", Input)
+            inp.focus()
+        except: pass
+
+    def action_blur_search(self) -> None:
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        try:
+            inp = self.query_one("#group-search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
+        self.call_later(self.refresh_groups_list)
+
+    @on(Input.Changed, "#group-search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_groups_list()
+
+    @on(Input.Submitted, "#group-search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
     def action_move_up(self) -> None:
+        if self.search_focused: return
         if self.selected_index > 0:
             self.selected_index -= 1
             self.update_selection()
     
     def action_move_down(self) -> None:
-        if self.selected_index < len(self.options) - 1:
+        if self.search_focused: return
+        if self.selected_index < len(self.filtered_items) - 1:
             self.selected_index += 1
             self.update_selection()
     
     def action_select_group(self) -> None:
-        self.dismiss(self.options[self.selected_index])
+        if self.search_focused:
+            self.action_blur_search()
+            return
+        if self.filtered_items and 0 <= self.selected_index < len(self.filtered_items):
+            self.dismiss(self.filtered_items[self.selected_index][1])
+
+    def action_cancel(self) -> None:
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(None)
     
     def action_cancel(self) -> None:
         self.dismiss(self.current_group_id)
@@ -3407,11 +3782,13 @@ class MultiTaskPickerModal(ModalScreen[Optional[list[int]]]):
     DEFAULT_CSS = """
     MultiTaskPickerModal { align: center middle; }
     MultiTaskPickerModal > VerticalScroll {
-        width: 78; height: 32; border: thick $primary;
+        width: 78; height: 36; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     MultiTaskPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
-    MultiTaskPickerModal #task-picker-list { width: 100%; height: 20; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    MultiTaskPickerModal .search-label { color: $text-muted; margin-bottom: 0; }
+    MultiTaskPickerModal Input { width: 100%; margin-bottom: 1; }
+    MultiTaskPickerModal #task-picker-list { width: 100%; height: 18; overflow-y: auto; border: solid $primary-background; padding: 1; }
     MultiTaskPickerModal .item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
@@ -3432,19 +3809,32 @@ class MultiTaskPickerModal(ModalScreen[Optional[list[int]]]):
         Binding("j", "move_down", show=False),
         Binding("space", "toggle_select", show=False),
         Binding("enter", "save", show=False),
+        Binding("/", "focus_search", show=False),
     ]
 
     def __init__(self, tasks: list[Task], selected_task_ids: list[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.tasks = tasks or []
         self.selected_task_ids = set(selected_task_ids or [])
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        self.filtered_tasks: list[Task] = []
         self.selected_index = 0 if self.tasks else -1
+
+    def _get_filtered_tasks(self) -> list[Task]:
+        if not self.search_query:
+            return self.tasks
+        q = self.search_query.lower()
+        return [t for t in self.tasks if q in t.text.lower()]
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("📌 Seleccionar Tareas Asociadas", classes="modal-title")
+            yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir):", classes="search-label")
+            yield UndoableInput(placeholder="Escribe para buscar tareas...", id="mtp-search-input")
             yield Container(id="task-picker-list")
-            yield Label("↑↓/k/j: Navegar | Espacio: Marcar/Desmarcar | Enter/Guardar: Aceptar | Esc: Cancelar", classes="hint")
+            yield Label("↑↓/k/j: Navegar | Espacio: Marcar | /: Buscar | Enter/Guardar: Aceptar | Esc: Cancelar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("Guardar", variant="primary", id="save")
                 yield Button("Desmarcar Todas", variant="warning", id="clear-all")
@@ -3452,14 +3842,26 @@ class MultiTaskPickerModal(ModalScreen[Optional[list[int]]]):
 
     async def on_mount(self) -> None:
         await self.refresh_list()
+        try:
+            self.query_one("#mtp-search-input", Input).blur()
+        except: pass
 
     async def refresh_list(self) -> None:
         container = self.query_one("#task-picker-list", Container)
         await container.remove_children()
+        
+        self.filtered_tasks = self._get_filtered_tasks()
+        
         if not self.tasks:
             await container.mount(Label("No hay tareas disponibles.", classes="empty-msg"))
+            self.selected_index = -1
+        elif not self.filtered_tasks:
+            await container.mount(Label(f"No se encontraron tareas para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
         else:
-            for i, t in enumerate(self.tasks):
+            if self.selected_index >= len(self.filtered_tasks) or self.selected_index < 0:
+                self.selected_index = 0
+            for i, t in enumerate(self.filtered_tasks):
                 txt = t.text[:40] + "..." if len(t.text) > 40 else t.text
                 checked = "☑" if t.id in self.selected_task_ids else "☐"
                 item = Static(f"{checked}  {txt}", id=f"mtp-{i}", classes="item")
@@ -3469,19 +3871,51 @@ class MultiTaskPickerModal(ModalScreen[Optional[list[int]]]):
                 if i == self.selected_index:
                     item.add_class("selected")
 
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#mtp-search-input", Input).focus()
+        except: pass
+
+    def action_blur_search(self) -> None:
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        try:
+            inp = self.query_one("#mtp-search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
+        self.set_focus(None)
+        self.call_later(self.refresh_list)
+
+    @on(Input.Changed, "#mtp-search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_list()
+
+    @on(Input.Submitted, "#mtp-search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
     def action_move_up(self) -> None:
-        if self.tasks and self.selected_index > 0:
+        if self.search_focused: return
+        if self.filtered_tasks and self.selected_index > 0:
             self.selected_index -= 1
             self.update_selection()
 
     def action_move_down(self) -> None:
-        if self.tasks and self.selected_index < len(self.tasks) - 1:
+        if self.search_focused: return
+        if self.filtered_tasks and self.selected_index < len(self.filtered_tasks) - 1:
             self.selected_index += 1
             self.update_selection()
 
     def action_toggle_select(self) -> None:
-        if self.tasks and 0 <= self.selected_index < len(self.tasks):
-            tid = self.tasks[self.selected_index].id
+        if self.search_focused: return
+        if self.filtered_tasks and 0 <= self.selected_index < len(self.filtered_tasks):
+            tid = self.filtered_tasks[self.selected_index].id
             if tid in self.selected_task_ids:
                 self.selected_task_ids.remove(tid)
             else:
@@ -3489,25 +3923,16 @@ class MultiTaskPickerModal(ModalScreen[Optional[list[int]]]):
             self.call_later(self.refresh_list)
 
     def update_selection(self) -> None:
-        for i in range(len(self.tasks)):
+        for i in range(len(self.filtered_tasks)):
             try:
                 item = self.query_one(f"#mtp-{i}", Static)
                 item.set_class(i == self.selected_index, "selected")
             except Exception: pass
-        self.scroll_to_selected()
-
-    def scroll_to_selected(self) -> None:
-        if self.selected_index >= 0:
-            try:
-                item = self.query_one(f"#mtp-{self.selected_index}", Static)
-                item.scroll_visible()
-            except: pass
-
-    @on(Button.Pressed, "#save")
-    def on_save_btn(self) -> None:
-        self.action_save()
 
     def action_save(self) -> None:
+        if self.search_focused:
+            self.action_blur_search()
+            return
         self.dismiss(list(self.selected_task_ids))
 
     @on(Button.Pressed, "#clear-all")
@@ -3520,18 +3945,23 @@ class MultiTaskPickerModal(ModalScreen[Optional[list[int]]]):
         self.action_cancel()
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(None)
 
 
 class TaskPickerModal(ModalScreen[Optional[Task]]):
     DEFAULT_CSS = """
     TaskPickerModal { align: center middle; }
     TaskPickerModal > VerticalScroll {
-        width: 75; height: 30; border: thick $primary;
+        width: 75; height: 34; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     TaskPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
-    TaskPickerModal #task-picker-list { width: 100%; height: 18; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    TaskPickerModal .search-label { color: $text-muted; margin-bottom: 0; }
+    TaskPickerModal Input { width: 100%; margin-bottom: 1; }
+    TaskPickerModal #task-picker-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
     TaskPickerModal .item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
@@ -3550,12 +3980,17 @@ class TaskPickerModal(ModalScreen[Optional[Task]]):
         Binding("k", "move_up", show=False),
         Binding("j", "move_down", show=False),
         Binding("enter", "select", show=False),
+        Binding("/", "focus_search", show=False),
     ]
 
     def __init__(self, tasks: list[Task], selected_task_id: Optional[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.tasks = tasks or []
         self.selected_task_id = selected_task_id
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        self.filtered_tasks: list[Task] = []
         self.selected_index = 0 if self.tasks else -1
         if selected_task_id:
             for idx, t in enumerate(self.tasks):
@@ -3563,11 +3998,19 @@ class TaskPickerModal(ModalScreen[Optional[Task]]):
                     self.selected_index = idx
                     break
 
+    def _get_filtered_tasks(self) -> list[Task]:
+        if not self.search_query:
+            return self.tasks
+        q = self.search_query.lower()
+        return [t for t in self.tasks if q in t.text.lower()]
+
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("📌 Seleccionar Tarea", classes="modal-title")
+            yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir):", classes="search-label")
+            yield UndoableInput(placeholder="Escribe para buscar tareas...", id="tp-search-input")
             yield Container(id="task-picker-list")
-            yield Label("↑↓ Navegar | Enter: Seleccionar | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | /: Buscar | Enter: Seleccionar | Esc: Cancelar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("Seleccionar", variant="primary", id="select")
                 yield Button("Sin Tarea", variant="warning", id="none")
@@ -3575,14 +4018,26 @@ class TaskPickerModal(ModalScreen[Optional[Task]]):
 
     async def on_mount(self) -> None:
         await self.refresh_list()
+        try:
+            self.query_one("#tp-search-input", Input).blur()
+        except: pass
 
     async def refresh_list(self) -> None:
         container = self.query_one("#task-picker-list", Container)
         await container.remove_children()
+        
+        self.filtered_tasks = self._get_filtered_tasks()
+        
         if not self.tasks:
             await container.mount(Label("No hay tareas disponibles.", classes="empty-msg"))
+            self.selected_index = -1
+        elif not self.filtered_tasks:
+            await container.mount(Label(f"No se encontraron tareas para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
         else:
-            for i, t in enumerate(self.tasks):
+            if self.selected_index >= len(self.filtered_tasks) or self.selected_index < 0:
+                self.selected_index = 0
+            for i, t in enumerate(self.filtered_tasks):
                 txt = t.text[:40] + "..." if len(t.text) > 40 else t.text
                 checked = "📌 " if t.id == self.selected_task_id else "   "
                 item = Static(f"{checked}{txt}", id=f"tp-{i}", classes="item")
@@ -3590,38 +4045,64 @@ class TaskPickerModal(ModalScreen[Optional[Task]]):
                 if i == self.selected_index:
                     item.add_class("selected")
 
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#tp-search-input", Input).focus()
+        except: pass
+
+    def action_blur_search(self) -> None:
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        try:
+            inp = self.query_one("#tp-search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
+        self.set_focus(None)
+        self.call_later(self.refresh_list)
+
+    @on(Input.Changed, "#tp-search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_list()
+
+    @on(Input.Submitted, "#tp-search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
     def action_move_up(self) -> None:
-        if self.tasks and self.selected_index > 0:
+        if self.search_focused: return
+        if self.filtered_tasks and self.selected_index > 0:
             self.selected_index -= 1
             self.update_selection()
 
     def action_move_down(self) -> None:
-        if self.tasks and self.selected_index < len(self.tasks) - 1:
+        if self.search_focused: return
+        if self.filtered_tasks and self.selected_index < len(self.filtered_tasks) - 1:
             self.selected_index += 1
             self.update_selection()
 
     def update_selection(self) -> None:
-        for i in range(len(self.tasks)):
+        for i in range(len(self.filtered_tasks)):
             try:
                 item = self.query_one(f"#tp-{i}", Static)
                 item.set_class(i == self.selected_index, "selected")
             except Exception: pass
-        self.scroll_to_selected()
-
-    def scroll_to_selected(self) -> None:
-        if self.selected_index >= 0:
-            try:
-                item = self.query_one(f"#tp-{self.selected_index}", Static)
-                item.scroll_visible()
-            except: pass
 
     @on(Button.Pressed, "#select")
     def on_select(self) -> None:
         self.action_select()
 
     def action_select(self) -> None:
-        if self.tasks and 0 <= self.selected_index < len(self.tasks):
-            self.dismiss(self.tasks[self.selected_index])
+        if self.search_focused:
+            self.action_blur_search()
+            return
+        if self.filtered_tasks and 0 <= self.selected_index < len(self.filtered_tasks):
+            self.dismiss(self.filtered_tasks[self.selected_index])
         else:
             self.dismiss(None)
 
@@ -3631,21 +4112,26 @@ class TaskPickerModal(ModalScreen[Optional[Task]]):
 
     @on(Button.Pressed, "#cancel")
     def on_cancel(self) -> None:
-        self.dismiss(None)
+        self.action_cancel()
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(None)
 
 
 class GlobalNotesPickerModal(ModalScreen[Optional[list[Note]]]):
     DEFAULT_CSS = """
     GlobalNotesPickerModal { align: center middle; }
     GlobalNotesPickerModal > VerticalScroll {
-        width: 75; height: 30; border: thick $primary;
+        width: 75; height: 34; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     GlobalNotesPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
-    GlobalNotesPickerModal #gn-list { width: 100%; height: 18; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    GlobalNotesPickerModal .search-label { color: $text-muted; margin-bottom: 0; }
+    GlobalNotesPickerModal Input { width: 100%; margin-bottom: 1; }
+    GlobalNotesPickerModal #gn-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
     GlobalNotesPickerModal .item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
@@ -3666,54 +4152,137 @@ class GlobalNotesPickerModal(ModalScreen[Optional[list[Note]]]):
         Binding("j", "move_down", show=False),
         Binding("space", "toggle_item", show=False),
         Binding("enter", "save", show=False),
+        Binding("/", "focus_search", show=False),
     ]
 
     def __init__(self, global_notes: list[Note], selected_note_ids: list[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.global_notes = global_notes or []
-        self.selected_indices: set[int] = set()
-        if selected_note_ids:
-            for i, n in enumerate(self.global_notes):
-                if n.id in selected_note_ids:
-                    self.selected_indices.add(i)
+        self.selected_note_ids = set(selected_note_ids or [])
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        self.filtered_notes: list[Note] = []
         self.selected_index = 0 if self.global_notes else -1
+
+    def _get_filtered_notes(self) -> list[Note]:
+        if not self.search_query:
+            return self.global_notes
+        q = self.search_query.lower()
+        return [n for n in self.global_notes if q in n.title.lower() or q in n.description.lower()]
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("🌐 Seleccionar Notas Globales", classes="modal-title")
+            yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir):", classes="search-label")
+            yield UndoableInput(placeholder="Escribe para buscar notas...", id="gn-search-input")
             yield Container(id="gn-list")
-            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | Enter: Confirmar selección | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | Espacio: Marcar | /: Buscar | Enter: Guardar | Esc: Cancelar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("Seleccionar", variant="primary", id="save")
                 yield Button("Cancelar", variant="default", id="cancel")
 
     async def on_mount(self) -> None:
         await self.refresh_list()
+        try:
+            self.query_one("#gn-search-input", Input).blur()
+        except: pass
 
     async def refresh_list(self) -> None:
         container = self.query_one("#gn-list", Container)
         await container.remove_children()
+        
+        self.filtered_notes = self._get_filtered_notes()
+        
         if not self.global_notes:
             await container.mount(Label("No hay notas globales disponibles.", classes="empty-msg"))
+            self.selected_index = -1
+        elif not self.filtered_notes:
+            await container.mount(Label(f"No se encontraron notas para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
         else:
-            for i, n in enumerate(self.global_notes):
-                checked = "☑" if i in self.selected_indices else "☐"
+            if self.selected_index >= len(self.filtered_notes) or self.selected_index < 0:
+                self.selected_index = 0
+            
+            for i, n in enumerate(self.filtered_notes):
+                checked = "☑" if n.id in self.selected_note_ids else "☐"
                 item = Static(f"{checked}  📝 {n.title}", id=f"gn-{i}", classes="item")
                 await container.mount(item)
-                if i in self.selected_indices:
+                if n.id in self.selected_note_ids:
                     item.add_class("checked")
                 if i == self.selected_index:
                     item.add_class("selected")
 
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#gn-search-input", Input).focus()
+        except: pass
+
+    def action_blur_search(self) -> None:
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        try:
+            inp = self.query_one("#gn-search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
+        self.set_focus(None)
+        self.call_later(self.refresh_list)
+
+    @on(Input.Changed, "#gn-search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_list()
+
+    @on(Input.Submitted, "#gn-search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
     def action_move_up(self) -> None:
-        if self.global_notes and self.selected_index > 0:
+        if self.search_focused: return
+        if self.filtered_notes and self.selected_index > 0:
             self.selected_index -= 1
             self.update_selection()
 
     def action_move_down(self) -> None:
-        if self.global_notes and self.selected_index < len(self.global_notes) - 1:
+        if self.search_focused: return
+        if self.filtered_notes and self.selected_index < len(self.filtered_notes) - 1:
             self.selected_index += 1
             self.update_selection()
+
+    def update_selection(self) -> None:
+        for i in range(len(self.filtered_notes)):
+            try:
+                item = self.query_one(f"#gn-{i}", Static)
+                item.set_class(i == self.selected_index, "selected")
+            except Exception: pass
+
+    def action_toggle_item(self) -> None:
+        if self.search_focused: return
+        if self.filtered_notes and 0 <= self.selected_index < len(self.filtered_notes):
+            n = self.filtered_notes[self.selected_index]
+            if n.id in self.selected_note_ids:
+                self.selected_note_ids.remove(n.id)
+            else:
+                self.selected_note_ids.add(n.id)
+            self.call_later(self.refresh_list)
+
+    def action_save(self) -> None:
+        if self.search_focused:
+            self.action_blur_search()
+            return
+        selected = [n for n in self.global_notes if n.id in self.selected_note_ids]
+        self.dismiss(selected)
+
+    def action_cancel(self) -> None:
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(None)
 
     def action_toggle_item(self) -> None:
         if self.global_notes and 0 <= self.selected_index < len(self.global_notes):
@@ -4576,11 +5145,14 @@ class TaskNotesModal(ModalScreen[list[Note]]):
     DEFAULT_CSS = """
     TaskNotesModal { align: center middle; }
     TaskNotesModal > VerticalScroll {
-        width: 82; height: 38; border: thick $primary;
+        width: 82; height: 42; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     TaskNotesModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
+    TaskNotesModal .search-label { color: $text-muted; margin-bottom: 0; }
+    TaskNotesModal Input { width: 100%; margin-bottom: 1; }
     TaskNotesModal #notes-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    TaskNotesModal .empty-msg { width: 100%; text-align: center; color: $text-muted; text-style: italic; padding: 2; }
     TaskNotesModal .hint { width: 100%; height: auto; text-align: center; color: $text-muted; margin: 1 0; }
     TaskNotesModal .button-row { width: 100%; height: auto; align: center middle; margin-top: 1; }
     TaskNotesModal Button { margin: 0 1; }
@@ -4595,6 +5167,7 @@ class TaskNotesModal(ModalScreen[list[Note]]):
         Binding("e", "edit_note", show=False),
         Binding("d", "delete_note", show=False),
         Binding("enter", "view_note", show=False),
+        Binding("/", "focus_search", show=False),
     ]
 
     def __init__(self, notes: list[Note], next_note_id: int, global_notes: list[Note] = None, all_tags: list[Tag] = None, **kwargs) -> None:
@@ -4605,36 +5178,105 @@ class TaskNotesModal(ModalScreen[list[Note]]):
         self.next_note_id = next_note_id
         self.global_notes = global_notes or []
         self.all_tags = all_tags or []
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        self.filtered_notes: list[Note] = []
         self.selected_index = 0 if notes else -1
+
+    def _get_filtered_notes(self) -> list[Note]:
+        if not self.search_query:
+            return self.notes
+        q = self.search_query.lower()
+        return [n for n in self.notes if q in n.title.lower() or q in n.description.lower()]
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("📝 Notas de la Tarea", classes="modal-title")
+            yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir):", classes="search-label")
+            yield UndoableInput(placeholder="Escribe para buscar notas...", id="task-notes-search-input")
             yield Container(id="notes-list")
-            yield Label("↑↓/k/j: Navegar | a: Añadir | e: Editar | d: Eliminar | Enter: Ver | Esc: Guardar/Cerrar", classes="hint")
+            yield Label("↑↓/k/j: Navegar | a: Añadir | e: Editar | d: Eliminar | /: Buscar | Enter: Ver | Esc: Cerrar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("➕ Añadir", variant="primary", id="add")
+                yield Button("📌 Existentes", variant="warning", id="select-existing")
                 yield Button("👁️ Ver", variant="default", id="view")
                 yield Button("✏️ Editar", variant="default", id="edit")
                 yield Button("🗑️ Eliminar", variant="error", id="delete")
 
     async def on_mount(self) -> None:
         await self.refresh_notes_list()
+        try:
+            self.query_one("#task-notes-search-input", Input).blur()
+        except: pass
 
     async def refresh_notes_list(self) -> None:
         notes_list = self.query_one("#notes-list", Container)
         await notes_list.remove_children()
+        
+        self.filtered_notes = self._get_filtered_notes()
+        
         if not self.notes:
             await notes_list.mount(Label("No hay notas embebidas. Pulsa 'a' para añadir una.", classes="empty-msg"))
             self.selected_index = -1
+        elif not self.filtered_notes:
+            await notes_list.mount(Label(f"No se encontraron notas para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
         else:
-            if self.selected_index >= len(self.notes):
-                self.selected_index = max(0, len(self.notes) - 1)
-            for i, note in enumerate(self.notes):
+            if self.selected_index >= len(self.filtered_notes) or self.selected_index < 0:
+                self.selected_index = max(0, len(self.filtered_notes) - 1)
+            for i, note in enumerate(self.filtered_notes):
                 w = NoteWidget(note, all_tags=self.all_tags, id=f"t-note-{i}")
                 await notes_list.mount(w)
                 if i == self.selected_index:
                     w.add_class("selected")
+
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#task-notes-search-input", Input).focus()
+        except: pass
+
+    def action_blur_search(self) -> None:
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        try:
+            inp = self.query_one("#task-notes-search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
+        self.set_focus(None)
+        self.call_later(self.refresh_notes_list)
+
+    @on(Button.Pressed, "#select-existing")
+    def on_select_existing(self) -> None:
+        def on_result(result: Optional[list[Note]]) -> None:
+            if result is not None:
+                self.notes = result
+                if self.notes:
+                    self.next_note_id = max((n.id for n in self.notes), default=0) + 1
+                self.call_later(self.refresh_notes_list)
+        global_notes = self.global_notes or getattr(self.app, "notes", [])
+        current_ids = [n.id for n in self.notes]
+        self.app.push_screen(GlobalNotesPickerModal(global_notes, selected_note_ids=current_ids), on_result)
+
+    @on(Input.Changed, "#task-notes-search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_notes_list()
+
+    @on(Input.Submitted, "#task-notes-search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
+    def action_close(self) -> None:
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(self.notes)
 
     def action_move_up(self) -> None:
         if self.notes and self.selected_index > 0:
@@ -4737,11 +5379,14 @@ class VoiceNotesModal(ModalScreen[list[VoiceNote]]):
     DEFAULT_CSS = """
     VoiceNotesModal { align: center middle; }
     VoiceNotesModal > VerticalScroll {
-        width: 82; height: 38; border: thick $primary;
+        width: 82; height: 42; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     VoiceNotesModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
+    VoiceNotesModal .search-label { color: $text-muted; margin-bottom: 0; }
+    VoiceNotesModal Input { width: 100%; margin-bottom: 1; }
     VoiceNotesModal #voice-notes-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    VoiceNotesModal .empty-msg { width: 100%; text-align: center; color: $text-muted; text-style: italic; padding: 2; }
     VoiceNotesModal .hint { width: 100%; height: auto; text-align: center; color: $text-muted; margin: 1 0; }
     VoiceNotesModal .button-row { width: 100%; height: auto; align: center middle; margin-top: 1; }
     VoiceNotesModal Button { margin: 0 1; }
@@ -4757,6 +5402,7 @@ class VoiceNotesModal(ModalScreen[list[VoiceNote]]):
         Binding("d", "delete_audio", show=False),
         Binding("enter", "play_audio", show=False),
         Binding("p", "play_audio", show=False),
+        Binding("/", "focus_search", show=False),
     ]
 
     def __init__(self, voice_notes: list[VoiceNote], next_voice_note_id: int,
@@ -4769,36 +5415,93 @@ class VoiceNotesModal(ModalScreen[list[VoiceNote]]):
         self.next_voice_note_id = next_voice_note_id
         self.global_voice_notes = global_voice_notes or []
         self.all_tags = all_tags or []
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        self.filtered_voice_notes: list[VoiceNote] = []
         self.selected_index = 0 if voice_notes else -1
+
+    def _get_filtered_voice_notes(self) -> list[VoiceNote]:
+        if not self.search_query:
+            return self.voice_notes
+        q = self.search_query.lower()
+        return [v for v in self.voice_notes if q in v.title.lower() or q in v.description.lower()]
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("🎤 Audios de la Tarea", classes="modal-title")
+            yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir):", classes="search-label")
+            yield UndoableInput(placeholder="Escribe para buscar audios...", id="vn-search-input")
             yield Container(id="voice-notes-list")
-            yield Label("↑↓/k/j: Navegar | r: Grabar | e: Editar | d: Eliminar | Enter/p: Reproducir | Esc: Guardar/Cerrar", classes="hint")
+            yield Label("↑↓/k/j: Navegar | r: Grabar | e: Editar | d: Eliminar | /: Buscar | Enter/p: Reproducir | Esc: Cerrar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("⏺ Añadir/Grabar", variant="primary", id="add")
+                yield Button("📌 Existentes", variant="warning", id="select-existing")
                 yield Button("▶ Reproducir", variant="success", id="play")
                 yield Button("✏️ Editar", variant="default", id="edit")
                 yield Button("🗑️ Eliminar", variant="error", id="delete")
 
     async def on_mount(self) -> None:
         await self.refresh_list()
+        try:
+            self.query_one("#vn-search-input", Input).blur()
+        except: pass
 
     async def refresh_list(self) -> None:
         vn_list = self.query_one("#voice-notes-list", Container)
         await vn_list.remove_children()
+        
+        self.filtered_voice_notes = self._get_filtered_voice_notes()
+        
         if not self.voice_notes:
             await vn_list.mount(Label("No hay audios embebidos. Pulsa 'Añadir/Grabar' para crear uno.", classes="empty-msg"))
             self.selected_index = -1
+        elif not self.filtered_voice_notes:
+            await vn_list.mount(Label(f"No se encontraron audios para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
         else:
-            if self.selected_index >= len(self.voice_notes):
-                self.selected_index = max(0, len(self.voice_notes) - 1)
-            for i, vn in enumerate(self.voice_notes):
-                w = VoiceNoteWidget(vn, all_tags=self.all_tags, id=f"t-vn-{i}")
+            if self.selected_index >= len(self.filtered_voice_notes) or self.selected_index < 0:
+                self.selected_index = max(0, len(self.filtered_voice_notes) - 1)
+            for i, vn in enumerate(self.filtered_voice_notes):
+                w = VoiceNoteWidget(vn, all_tags=self.all_tags, id=f"vn-item-{i}")
                 await vn_list.mount(w)
                 if i == self.selected_index:
                     w.add_class("selected")
+
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#vn-search-input", Input).focus()
+        except: pass
+
+    def action_blur_search(self) -> None:
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        try:
+            inp = self.query_one("#vn-search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
+        self.set_focus(None)
+        self.call_later(self.refresh_list)
+
+    @on(Input.Changed, "#vn-search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_list()
+
+    @on(Input.Submitted, "#vn-search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
+    def action_close(self) -> None:
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(self.voice_notes)
 
     def action_move_up(self) -> None:
         if self.voice_notes and self.selected_index > 0:
@@ -4897,11 +5600,13 @@ class GlobalVoiceNotesPickerModal(ModalScreen[Optional[list[VoiceNote]]]):
     DEFAULT_CSS = """
     GlobalVoiceNotesPickerModal { align: center middle; }
     GlobalVoiceNotesPickerModal > VerticalScroll {
-        width: 75; height: 30; border: thick $primary;
+        width: 75; height: 34; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     GlobalVoiceNotesPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
-    GlobalVoiceNotesPickerModal #gvn-list { width: 100%; height: 18; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    GlobalVoiceNotesPickerModal .search-label { color: $text-muted; margin-bottom: 0; }
+    GlobalVoiceNotesPickerModal Input { width: 100%; margin-bottom: 1; }
+    GlobalVoiceNotesPickerModal #gvn-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
     GlobalVoiceNotesPickerModal .item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
@@ -4922,71 +5627,139 @@ class GlobalVoiceNotesPickerModal(ModalScreen[Optional[list[VoiceNote]]]):
         Binding("j", "move_down", show=False),
         Binding("space", "toggle_item", show=False),
         Binding("enter", "save", show=False),
+        Binding("/", "focus_search", show=False),
     ]
 
     def __init__(self, global_voice_notes: list[VoiceNote], selected_vn_ids: list[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.global_voice_notes = global_voice_notes or []
-        self.selected_indices: set[int] = set()
-        if selected_vn_ids:
-            for i, vn in enumerate(self.global_voice_notes):
-                if vn.id in selected_vn_ids:
-                    self.selected_indices.add(i)
+        self.selected_vn_ids = set(selected_vn_ids or [])
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        self.filtered_voice_notes: list[VoiceNote] = []
         self.selected_index = 0 if self.global_voice_notes else -1
+
+    def _get_filtered_voice_notes(self) -> list[VoiceNote]:
+        if not self.search_query:
+            return self.global_voice_notes
+        q = self.search_query.lower()
+        return [v for v in self.global_voice_notes if q in v.title.lower() or q in v.description.lower()]
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("🌐 Seleccionar Audios Globales", classes="modal-title")
+            yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir):", classes="search-label")
+            yield UndoableInput(placeholder="Escribe para buscar audios...", id="gvn-search-input")
             yield Container(id="gvn-list")
-            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | Enter: Confirmar selección | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | Espacio: Marcar | /: Buscar | Enter: Guardar | Esc: Cancelar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("Seleccionar", variant="primary", id="save")
                 yield Button("Cancelar", variant="default", id="cancel")
 
     async def on_mount(self) -> None:
         await self.refresh_list()
+        try:
+            self.query_one("#gvn-search-input", Input).blur()
+        except: pass
 
     async def refresh_list(self) -> None:
         container = self.query_one("#gvn-list", Container)
         await container.remove_children()
+        
+        self.filtered_voice_notes = self._get_filtered_voice_notes()
+        
         if not self.global_voice_notes:
             await container.mount(Label("No hay audios globales disponibles.", classes="empty-msg"))
+            self.selected_index = -1
+        elif not self.filtered_voice_notes:
+            await container.mount(Label(f"No se encontraron audios para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
         else:
-            for i, vn in enumerate(self.global_voice_notes):
+            if self.selected_index >= len(self.filtered_voice_notes) or self.selected_index < 0:
+                self.selected_index = 0
+            
+            for i, vn in enumerate(self.filtered_voice_notes):
                 dur = int(vn.duration)
                 m, s = divmod(dur, 60)
-                checked = "☑" if i in self.selected_indices else "☐"
+                checked = "☑" if vn.id in self.selected_vn_ids else "☐"
                 item = Static(f"{checked}  🎤 {vn.title} ({m:02d}:{s:02d})", id=f"gvn-{i}", classes="item")
                 await container.mount(item)
-                if i in self.selected_indices:
+                if vn.id in self.selected_vn_ids:
                     item.add_class("checked")
                 if i == self.selected_index:
                     item.add_class("selected")
 
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#gvn-search-input", Input).focus()
+        except: pass
+
+    def action_blur_search(self) -> None:
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        try:
+            inp = self.query_one("#gvn-search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
+        self.set_focus(None)
+        self.call_later(self.refresh_list)
+
+    @on(Input.Changed, "#gvn-search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_list()
+
+    @on(Input.Submitted, "#gvn-search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
     def action_move_up(self) -> None:
-        if self.global_voice_notes and self.selected_index > 0:
+        if self.search_focused: return
+        if self.filtered_voice_notes and self.selected_index > 0:
             self.selected_index -= 1
             self.update_selection()
 
     def action_move_down(self) -> None:
-        if self.global_voice_notes and self.selected_index < len(self.global_voice_notes) - 1:
+        if self.search_focused: return
+        if self.filtered_voice_notes and self.selected_index < len(self.filtered_voice_notes) - 1:
             self.selected_index += 1
             self.update_selection()
 
     def action_toggle_item(self) -> None:
-        if self.global_voice_notes and 0 <= self.selected_index < len(self.global_voice_notes):
-            if self.selected_index in self.selected_indices:
-                self.selected_indices.remove(self.selected_index)
+        if self.search_focused: return
+        if self.filtered_voice_notes and 0 <= self.selected_index < len(self.filtered_voice_notes):
+            vn = self.filtered_voice_notes[self.selected_index]
+            if vn.id in self.selected_vn_ids:
+                self.selected_vn_ids.remove(vn.id)
             else:
-                self.selected_indices.add(self.selected_index)
+                self.selected_vn_ids.add(vn.id)
             self.call_later(self.refresh_list)
 
     def update_selection(self) -> None:
-        for i in range(len(self.global_voice_notes)):
+        for i in range(len(self.filtered_voice_notes)):
             try:
                 item = self.query_one(f"#gvn-{i}", Static)
                 item.set_class(i == self.selected_index, "selected")
             except Exception: pass
+
+    def action_save(self) -> None:
+        if self.search_focused:
+            self.action_blur_search()
+            return
+        selected = [vn for vn in self.global_voice_notes if vn.id in self.selected_vn_ids]
+        self.dismiss(selected)
+
+    def action_cancel(self) -> None:
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(None)
         self.scroll_to_selected()
 
     def scroll_to_selected(self) -> None:
@@ -5020,11 +5793,13 @@ class GlobalCanvasPickerModal(ModalScreen[Optional[list[Canvas]]]):
     DEFAULT_CSS = """
     GlobalCanvasPickerModal { align: center middle; }
     GlobalCanvasPickerModal > VerticalScroll {
-        width: 75; height: 30; border: thick $primary;
+        width: 75; height: 34; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     GlobalCanvasPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
-    GlobalCanvasPickerModal #gc-list { width: 100%; height: 18; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    GlobalCanvasPickerModal .search-label { color: $text-muted; margin-bottom: 0; }
+    GlobalCanvasPickerModal Input { width: 100%; margin-bottom: 1; }
+    GlobalCanvasPickerModal #gc-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
     GlobalCanvasPickerModal .item {
         width: 100%; height: 3; padding: 0 1;
         border: solid $primary-background; margin-bottom: 1;
@@ -5045,94 +5820,137 @@ class GlobalCanvasPickerModal(ModalScreen[Optional[list[Canvas]]]):
         Binding("j", "move_down", show=False),
         Binding("space", "toggle_item", show=False),
         Binding("enter", "save", show=False),
+        Binding("/", "focus_search", show=False),
     ]
 
     def __init__(self, global_canvas_list: list[Canvas], selected_canvas_ids: list[int] = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.global_canvas_list = global_canvas_list or []
-        self.selected_indices: set[int] = set()
-        if selected_canvas_ids:
-            for i, c in enumerate(self.global_canvas_list):
-                if c.id in selected_canvas_ids:
-                    self.selected_indices.add(i)
+        self.selected_canvas_ids = set(selected_canvas_ids or [])
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        self.filtered_canvas: list[Canvas] = []
         self.selected_index = 0 if self.global_canvas_list else -1
+
+    def _get_filtered_canvas(self) -> list[Canvas]:
+        if not self.search_query:
+            return self.global_canvas_list
+        q = self.search_query.lower()
+        return [c for c in self.global_canvas_list if q in c.title.lower()]
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("🎨 Seleccionar Pizarras Globales", classes="modal-title")
+            yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir):", classes="search-label")
+            yield UndoableInput(placeholder="Escribe para buscar pizarras...", id="gc-search-input")
             yield Container(id="gc-list")
-            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | Enter: Confirmar selección | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | Espacio: Marcar | /: Buscar | Enter: Guardar | Esc: Cancelar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("Seleccionar", variant="primary", id="save")
                 yield Button("Cancelar", variant="default", id="cancel")
 
     async def on_mount(self) -> None:
         await self.refresh_list()
+        try:
+            self.query_one("#gc-search-input", Input).blur()
+        except: pass
 
     async def refresh_list(self) -> None:
         container = self.query_one("#gc-list", Container)
         await container.remove_children()
+        
+        self.filtered_canvas = self._get_filtered_canvas()
+        
         if not self.global_canvas_list:
             await container.mount(Label("No hay pizarras globales disponibles.", classes="empty-msg"))
+            self.selected_index = -1
+        elif not self.filtered_canvas:
+            await container.mount(Label(f"No se encontraron pizarras para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
         else:
-            for i, c in enumerate(self.global_canvas_list):
-                checked = "☑" if i in self.selected_indices else "☐"
+            if self.selected_index >= len(self.filtered_canvas) or self.selected_index < 0:
+                self.selected_index = 0
+            
+            for i, c in enumerate(self.filtered_canvas):
+                checked = "☑" if c.id in self.selected_canvas_ids else "☐"
                 item = Static(f"{checked}  🎨 {c.title}", id=f"gc-{i}", classes="item")
                 await container.mount(item)
-                if i in self.selected_indices:
+                if c.id in self.selected_canvas_ids:
                     item.add_class("checked")
                 if i == self.selected_index:
                     item.add_class("selected")
 
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#gc-search-input", Input).focus()
+        except: pass
+
+    def action_blur_search(self) -> None:
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        try:
+            inp = self.query_one("#gc-search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
+        self.set_focus(None)
+        self.call_later(self.refresh_list)
+
+    @on(Input.Changed, "#gc-search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_list()
+
+    @on(Input.Submitted, "#gc-search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
     def action_move_up(self) -> None:
-        if self.global_canvas_list and self.selected_index > 0:
+        if self.search_focused: return
+        if self.filtered_canvas and self.selected_index > 0:
             self.selected_index -= 1
             self.update_selection()
 
     def action_move_down(self) -> None:
-        if self.global_canvas_list and self.selected_index < len(self.global_canvas_list) - 1:
+        if self.search_focused: return
+        if self.filtered_canvas and self.selected_index < len(self.filtered_canvas) - 1:
             self.selected_index += 1
             self.update_selection()
 
     def action_toggle_item(self) -> None:
-        if self.global_canvas_list and 0 <= self.selected_index < len(self.global_canvas_list):
-            if self.selected_index in self.selected_indices:
-                self.selected_indices.remove(self.selected_index)
+        if self.search_focused: return
+        if self.filtered_canvas and 0 <= self.selected_index < len(self.filtered_canvas):
+            c = self.filtered_canvas[self.selected_index]
+            if c.id in self.selected_canvas_ids:
+                self.selected_canvas_ids.remove(c.id)
             else:
-                self.selected_indices.add(self.selected_index)
+                self.selected_canvas_ids.add(c.id)
             self.call_later(self.refresh_list)
 
     def update_selection(self) -> None:
-        for i in range(len(self.global_canvas_list)):
+        for i in range(len(self.filtered_canvas)):
             try:
                 item = self.query_one(f"#gc-{i}", Static)
                 item.set_class(i == self.selected_index, "selected")
             except Exception: pass
-        self.scroll_to_selected()
-
-    def scroll_to_selected(self) -> None:
-        if self.selected_index >= 0:
-            try:
-                item = self.query_one(f"#gc-{self.selected_index}", Static)
-                item.scroll_visible()
-            except: pass
 
     def action_save(self) -> None:
-        if self.selected_indices:
-            self.dismiss([self.global_canvas_list[i] for i in sorted(self.selected_indices)])
-        else:
-            self.dismiss(None)
-
-    @on(Button.Pressed, "#save")
-    def on_save_btn(self) -> None:
-        self.action_save()
-
-    @on(Button.Pressed, "#cancel")
-    def on_cancel_btn(self) -> None:
-        self.dismiss(None)
+        if self.search_focused:
+            self.action_blur_search()
+            return
+        selected = [c for c in self.global_canvas_list if c.id in self.selected_canvas_ids]
+        self.dismiss(selected)
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(None)
 
 
 
@@ -5140,11 +5958,14 @@ class TaskCanvasModal(ModalScreen[list[Canvas]]):
     DEFAULT_CSS = """
     TaskCanvasModal { align: center middle; }
     TaskCanvasModal > VerticalScroll {
-        width: 82; height: 38; border: thick $primary;
+        width: 82; height: 42; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     TaskCanvasModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
+    TaskCanvasModal .search-label { color: $text-muted; margin-bottom: 0; }
+    TaskCanvasModal Input { width: 100%; margin-bottom: 1; }
     TaskCanvasModal #canvas-list { width: 100%; height: 16; overflow-y: auto; border: solid $primary-background; padding: 1; }
+    TaskCanvasModal .empty-msg { width: 100%; text-align: center; color: $text-muted; text-style: italic; padding: 2; }
     TaskCanvasModal .hint { width: 100%; height: auto; text-align: center; color: $text-muted; margin: 1 0; }
     TaskCanvasModal .button-row { width: 100%; height: auto; align: center middle; margin-top: 1; }
     TaskCanvasModal Button { margin: 0 1; }
@@ -5159,6 +5980,7 @@ class TaskCanvasModal(ModalScreen[list[Canvas]]):
         Binding("e", "edit_canvas", show=False),
         Binding("d", "delete_canvas", show=False),
         Binding("enter", "edit_canvas", show=False),
+        Binding("/", "focus_search", show=False),
     ]
 
     def __init__(self, canvas_list: list[Canvas], next_canvas_id: int,
@@ -5170,35 +5992,104 @@ class TaskCanvasModal(ModalScreen[list[Canvas]]):
         self.next_canvas_id = next_canvas_id
         self.global_canvas_list = global_canvas_list or []
         self.all_tags = all_tags or []
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        self.filtered_canvas: list[Canvas] = []
         self.selected_index = 0 if canvas_list else -1
+
+    def _get_filtered_canvas(self) -> list[Canvas]:
+        if not self.search_query:
+            return self.canvas_list
+        q = self.search_query.lower()
+        return [c for c in self.canvas_list if q in c.title.lower()]
 
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("🎨 Pizarras de la Tarea", classes="modal-title")
+            yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir):", classes="search-label")
+            yield UndoableInput(placeholder="Escribe para buscar pizarras...", id="task-canvas-search-input")
             yield Container(id="canvas-list")
-            yield Label("↑↓/k/j: Navegar | a: Crear | e/Enter: Editar | d: Eliminar | Esc: Guardar/Cerrar", classes="hint")
+            yield Label("↑↓/k/j: Navegar | a: Crear | e/Enter: Editar | d: Eliminar | /: Buscar | Esc: Cerrar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("➕ Crear Pizarra", variant="primary", id="add")
+                yield Button("📌 Existentes", variant="warning", id="select-existing")
                 yield Button("✏️ Editar", variant="default", id="edit")
                 yield Button("🗑️ Eliminar", variant="error", id="delete")
 
     async def on_mount(self) -> None:
         await self.refresh_list()
+        try:
+            self.query_one("#task-canvas-search-input", Input).blur()
+        except: pass
 
     async def refresh_list(self) -> None:
         container = self.query_one("#canvas-list", Container)
         await container.remove_children()
+        
+        self.filtered_canvas = self._get_filtered_canvas()
+        
         if not self.canvas_list:
             await container.mount(Label("No hay pizarras asociadas. Pulsa 'Crear Pizarra' para añadir una.", classes="empty-msg"))
             self.selected_index = -1
+        elif not self.filtered_canvas:
+            await container.mount(Label(f"No se encontraron pizarras para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
         else:
-            if self.selected_index >= len(self.canvas_list):
-                self.selected_index = max(0, len(self.canvas_list) - 1)
-            for i, c in enumerate(self.canvas_list):
+            if self.selected_index >= len(self.filtered_canvas) or self.selected_index < 0:
+                self.selected_index = max(0, len(self.filtered_canvas) - 1)
+            for i, c in enumerate(self.filtered_canvas):
                 w = CanvasWidget(c, id=f"t-cv-{i}")
                 await container.mount(w)
                 if i == self.selected_index:
                     w.selected = True
+
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#task-canvas-search-input", Input).focus()
+        except: pass
+
+    def action_blur_search(self) -> None:
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        try:
+            inp = self.query_one("#task-canvas-search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
+        self.set_focus(None)
+        self.call_later(self.refresh_list)
+
+    @on(Button.Pressed, "#select-existing")
+    def on_select_existing(self) -> None:
+        def on_result(result: Optional[list[Canvas]]) -> None:
+            if result is not None:
+                self.canvas_list = result
+                if self.canvas_list:
+                    self.next_canvas_id = max((c.id for c in self.canvas_list), default=0) + 1
+                self.call_later(self.refresh_list)
+        global_canvas = self.global_canvas_list or getattr(self.app, "canvas_list", [])
+        current_ids = [c.id for c in self.canvas_list]
+        self.app.push_screen(GlobalCanvasPickerModal(global_canvas, selected_canvas_ids=current_ids), on_result)
+
+    @on(Input.Changed, "#task-canvas-search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_list()
+
+    @on(Input.Submitted, "#task-canvas-search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
+    def action_close(self) -> None:
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(self.canvas_list)
 
     def action_move_up(self) -> None:
         if self.canvas_list and self.selected_index > 0:
@@ -5645,15 +6536,32 @@ class TagsManagerModal(ModalScreen[list[Tag]]):
     
     def action_focus_search(self) -> None:
         self.search_focused = True
-        self.query_one("#search-input", Input).focus()
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#search-input", Input).focus()
+        except: pass
     
     def action_blur_search(self) -> None:
+        self.search_query = ""
         self.search_focused = False
+        self._explicit_search_focus = False
         try:
-            self.query_one("#search-input", Input).blur()
-        except:
-            pass
+            inp = self.query_one("#search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
         self.set_focus(None)
+        self.call_later(self.refresh_tags_list)
+
+    @on(Input.Submitted, "#search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
+    def action_close(self) -> None:
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(self.tags)
     
     def action_add_tag(self) -> None:
         if self.search_focused:
@@ -5903,18 +6811,38 @@ class TagPickerModal(ModalScreen[list[int]]):
     
     def action_focus_search(self) -> None:
         self.search_focused = True
-        self.query_one("#search-input", Input).focus()
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#search-input", Input).focus()
+        except: pass
     
     def action_blur_search(self) -> None:
+        self.search_query = ""
         self.search_focused = False
+        self._explicit_search_focus = False
         try:
-            self.query_one("#search-input", Input).blur()
-        except:
-            pass
+            inp = self.query_one("#search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
         self.set_focus(None)
+        self.call_later(self.refresh_tags_list)
+
+    @on(Input.Submitted, "#search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
     
     def action_save(self) -> None:
+        if self.search_focused:
+            self.action_blur_search()
+            return
         self.dismiss(self.selected_tag_ids)
+
+    def action_cancel(self) -> None:
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(None)
     
     @on(Button.Pressed, "#save")
     def on_save(self) -> None:
@@ -5922,11 +6850,13 @@ class TagPickerModal(ModalScreen[list[int]]):
     
     @on(Button.Pressed, "#cancel")
     def on_cancel(self) -> None:
-        self.action_cancel()
+        self.dismiss(None)
     
     @on(Input.Changed, "#search-input")
     async def on_search_changed(self, event: Input.Changed) -> None:
         self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_tags_list()
         self.selected_index = 0
         await self.refresh_tags_list()
     
@@ -7258,10 +8188,12 @@ class UnscheduledTasksModal(ModalScreen[Optional[list[int]]]):
     DEFAULT_CSS = """
     UnscheduledTasksModal { align: center middle; }
     UnscheduledTasksModal > VerticalScroll {
-        width: 70; height: 28; border: thick $primary;
+        width: 70; height: 32; border: thick $primary;
         background: $surface; padding: 1 2;
     }
     UnscheduledTasksModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
+    UnscheduledTasksModal .search-label { color: $text-muted; margin-bottom: 0; }
+    UnscheduledTasksModal Input { width: 100%; margin-bottom: 1; }
     UnscheduledTasksModal .info-text { width: 100%; text-align: center; color: $text-muted; margin-bottom: 1; }
     UnscheduledTasksModal #tasks-list { width: 100%; height: 14; overflow-y: auto; border: solid $primary-background; padding: 1; }
     UnscheduledTasksModal .task-item {
@@ -7284,6 +8216,7 @@ class UnscheduledTasksModal(ModalScreen[Optional[list[int]]]):
         Binding("j", "move_down", show=False),
         Binding("space", "toggle_task", show=False),
         Binding("enter", "save", show=False),
+        Binding("/", "focus_search", show=False),
     ]
     
     def __init__(self, unscheduled_tasks: list[Task], all_groups: list[Group], **kwargs) -> None:
@@ -7291,30 +8224,51 @@ class UnscheduledTasksModal(ModalScreen[Optional[list[int]]]):
         self.unscheduled_tasks = unscheduled_tasks
         self.all_groups = all_groups
         self.selected_task_ids: list[int] = []
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        self.filtered_tasks: list[Task] = []
         self.selected_index = 0 if unscheduled_tasks else -1
     
+    def _get_filtered_tasks(self) -> list[Task]:
+        if not self.search_query:
+            return self.unscheduled_tasks
+        q = self.search_query.lower()
+        return [t for t in self.unscheduled_tasks if q in t.text.lower()]
+
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("📋 Tareas sin fecha", classes="modal-title")
-            yield Label("Selecciona las tareas para asignarles la fecha del calendario", classes="info-text")
+            yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir):", classes="search-label")
+            yield UndoableInput(placeholder="Escribe para buscar tareas...", id="ut-search-input")
             yield Container(id="tasks-list")
-            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | Enter: Asignar fecha | Esc: Cancelar", classes="hint")
+            yield Label("↑↓ Navegar | Espacio: Marcar/Desmarcar | /: Buscar | Enter: Asignar fecha | Esc: Cancelar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("Asignar fecha", variant="primary", id="save")
                 yield Button("Cancelar", variant="default", id="cancel")
     
     async def on_mount(self) -> None:
         await self.refresh_list()
+        try:
+            self.query_one("#ut-search-input", Input).blur()
+        except: pass
     
     async def refresh_list(self) -> None:
         tasks_list = self.query_one("#tasks-list", Container)
         await tasks_list.remove_children()
         
+        self.filtered_tasks = self._get_filtered_tasks()
+        
         if not self.unscheduled_tasks:
             await tasks_list.mount(Label("No hay tareas sin fecha pendientes", classes="empty-msg"))
             self.selected_index = -1
+        elif not self.filtered_tasks:
+            await tasks_list.mount(Label(f"No se encontraron tareas para '{self.search_query}'", classes="empty-msg"))
+            self.selected_index = -1
         else:
-            for i, task in enumerate(self.unscheduled_tasks):
+            if self.selected_index >= len(self.filtered_tasks) or self.selected_index < 0:
+                self.selected_index = 0
+            for i, task in enumerate(self.filtered_tasks):
                 checked = "☑" if task.id in self.selected_task_ids else "☐"
                 
                 group_name = "Sin grupo"
@@ -7335,44 +8289,70 @@ class UnscheduledTasksModal(ModalScreen[Optional[list[int]]]):
                     item.add_class("checked")
                 if i == self.selected_index:
                     item.add_class("selected")
-            self.scroll_to_selected()
-    
-    def scroll_to_selected(self) -> None:
-        if self.selected_index >= 0:
-            try:
-                item = self.query_one(f"#task-{self.selected_index}", Static)
-                item.scroll_visible()
-            except: pass
-    
-    def update_selection(self) -> None:
-        for i in range(len(self.unscheduled_tasks)):
-            try:
-                item = self.query_one(f"#task-{i}", Static)
-                item.set_class(i == self.selected_index, "selected")
-            except: pass
-        self.scroll_to_selected()
-    
+
+    def action_focus_search(self) -> None:
+        self.search_focused = True
+        self._explicit_search_focus = True
+        try:
+            self.query_one("#ut-search-input", Input).focus()
+        except: pass
+
+    def action_blur_search(self) -> None:
+        self.search_query = ""
+        self.search_focused = False
+        self._explicit_search_focus = False
+        try:
+            inp = self.query_one("#ut-search-input", Input)
+            inp.value = ""
+            inp.blur()
+        except: pass
+        self.set_focus(None)
+        self.call_later(self.refresh_list)
+
+    @on(Input.Changed, "#ut-search-input")
+    async def on_search_changed(self, event: Input.Changed) -> None:
+        self.search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_list()
+
+    @on(Input.Submitted, "#ut-search-input")
+    def on_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_search()
+
     def action_move_up(self) -> None:
-        if self.unscheduled_tasks and self.selected_index > 0:
+        if self.search_focused: return
+        if self.filtered_tasks and self.selected_index > 0:
             self.selected_index -= 1
             self.update_selection()
     
     def action_move_down(self) -> None:
-        if self.unscheduled_tasks and self.selected_index < len(self.unscheduled_tasks) - 1:
+        if self.search_focused: return
+        if self.filtered_tasks and self.selected_index < len(self.filtered_tasks) - 1:
             self.selected_index += 1
             self.update_selection()
     
     def action_toggle_task(self) -> None:
-        if not self.unscheduled_tasks or self.selected_index < 0:
+        if self.search_focused: return
+        if not self.filtered_tasks or self.selected_index < 0:
             return
-        task = self.unscheduled_tasks[self.selected_index]
+        task = self.filtered_tasks[self.selected_index]
         if task.id in self.selected_task_ids:
             self.selected_task_ids.remove(task.id)
         else:
             self.selected_task_ids.append(task.id)
         self.call_later(self.refresh_list)
     
+    def update_selection(self) -> None:
+        for i in range(len(self.filtered_tasks)):
+            try:
+                item = self.query_one(f"#task-{i}", Static)
+                item.set_class(i == self.selected_index, "selected")
+            except: pass
+
     def action_save(self) -> None:
+        if self.search_focused:
+            self.action_blur_search()
+            return
         self.dismiss(self.selected_task_ids if self.selected_task_ids else None)
     
     @on(Button.Pressed, "#save")
@@ -7384,7 +8364,10 @@ class UnscheduledTasksModal(ModalScreen[Optional[list[int]]]):
         self.dismiss(None)
     
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        if self.search_query or self.search_focused:
+            self.action_blur_search()
+        else:
+            self.dismiss(None)
 
 class GroupTab(Static):
     DEFAULT_CSS = """
@@ -7791,7 +8774,201 @@ class EditDayItemsModal(ModalScreen[Optional[dict]]):
         if event.key == "ctrl+s":
             event.prevent_default()
             event.stop()
-            self.action_save()
+class SnakeModal(ModalScreen):
+    BINDINGS = [
+        Binding("ctrl+f", "exit_game", "Salir"),
+        Binding("escape", "exit_game", "Salir", show=False),
+        Binding("up", "dir_up", "Arriba", show=False),
+        Binding("w", "dir_up", "Arriba", show=False),
+        Binding("k", "dir_up", "Arriba", show=False),
+        Binding("down", "dir_down", "Abajo", show=False),
+        Binding("s", "dir_down", "Abajo", show=False),
+        Binding("j", "dir_down", "Abajo", show=False),
+        Binding("left", "dir_left", "Izquierda", show=False),
+        Binding("a", "dir_left", "Izquierda", show=False),
+        Binding("h", "dir_left", "Izquierda", show=False),
+        Binding("right", "dir_right", "Derecha", show=False),
+        Binding("d", "dir_right", "Derecha", show=False),
+        Binding("l", "dir_right", "Derecha", show=False),
+        Binding("r", "restart", "Reiniciar", show=False),
+        Binding("enter", "restart", "Reiniciar", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    SnakeModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.85);
+    }
+    #snake-box {
+        width: 66;
+        height: 25;
+        border: double #00ff00;
+        background: #0d1117;
+        padding: 0 1;
+        content-align: center middle;
+    }
+    #snake-title {
+        width: 100%;
+        text-align: center;
+        text-style: bold;
+        color: #00ff00;
+        height: 1;
+    }
+    #snake-stats {
+        width: 100%;
+        text-align: center;
+        color: #f3f4f6;
+        height: 1;
+        margin-bottom: 1;
+    }
+    #snake-board {
+        width: 62;
+        height: 16;
+        border: solid #30363d;
+        background: #000000;
+    }
+    #snake-footer {
+        width: 100%;
+        text-align: center;
+        color: #8b949e;
+        height: 1;
+        margin-top: 1;
+    }
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.grid_w = 30
+        self.grid_h = 14
+        self.snake = [(15, 7), (14, 7), (13, 7)]
+        self.dir = (1, 0)
+        self.next_dir = (1, 0)
+        self.score = 0
+        self.start_time = time.time()
+        self.end_time = None
+        self.game_over = False
+        self.food = (22, 7)
+        self.game_timer = None
+
+    def compose(self) -> ComposeResult:
+        with Container(id="snake-box"):
+            yield Label("🐍 SNAKE INFINITO 🐍", id="snake-title")
+            yield Label("Puntuación: 0   |   Tiempo: 00:00", id="snake-stats")
+            yield Static("", id="snake-board")
+            yield Label("Atajos: Flechas / WASD para moverte | Ctrl+F para salir", id="snake-footer")
+
+    def on_mount(self) -> None:
+        self.food = self._spawn_food()
+        self.game_timer = self.set_interval(0.12, self.game_step)
+        self.render_game()
+
+    def _spawn_food(self) -> tuple[int, int]:
+        empty = [(x, y) for x in range(self.grid_w) for y in range(self.grid_h) if (x, y) not in self.snake]
+        return random.choice(empty) if empty else (0, 0)
+
+    def change_dir(self, dx: int, dy: int) -> None:
+        if self.game_over:
+            return
+        if (dx, dy) != (-self.dir[0], -self.dir[1]):
+            self.next_dir = (dx, dy)
+
+    def action_dir_up(self) -> None: self.change_dir(0, -1)
+    def action_dir_down(self) -> None: self.change_dir(0, 1)
+    def action_dir_left(self) -> None: self.change_dir(-1, 0)
+    def action_dir_right(self) -> None: self.change_dir(1, 0)
+
+    def action_restart(self) -> None:
+        if self.game_over:
+            self.snake = [(15, 7), (14, 7), (13, 7)]
+            self.dir = (1, 0)
+            self.next_dir = (1, 0)
+            self.score = 0
+            self.start_time = time.time()
+            self.end_time = None
+            self.game_over = False
+            self.food = self._spawn_food()
+            self.query_one("#snake-footer", Label).update("Atajos: Flechas / WASD para moverte | Ctrl+F para salir")
+            self.render_game()
+
+    def action_exit_game(self) -> None:
+        if self.game_timer:
+            self.game_timer.stop()
+        self.dismiss()
+
+    def on_key(self, event) -> None:
+        if event.key.lower() == "ctrl+f":
+            event.prevent_default()
+            event.stop()
+            self.action_exit_game()
+
+    def game_step(self) -> None:
+        if self.game_over:
+            return
+
+        self.dir = self.next_dir
+        hx, hy = self.snake[0][0] + self.dir[0], self.snake[0][1] + self.dir[1]
+
+        if hx < 0 or hx >= self.grid_w or hy < 0 or hy >= self.grid_h or (hx, hy) in self.snake:
+            self.game_over = True
+            self.end_time = time.time()
+            self.query_one("#snake-footer", Label).update("[bold red]¡GAME OVER![/bold red] Presiona 'R' para reiniciar | Ctrl+F para salir")
+            self.render_game()
+            return
+
+        self.snake.insert(0, (hx, hy))
+        if (hx, hy) == self.food:
+            self.score += 1
+            self.food = self._spawn_food()
+        else:
+            self.snake.pop()
+
+        self.render_game()
+
+    def render_game(self) -> None:
+        curr_time = self.end_time or time.time()
+        elapsed = int(curr_time - self.start_time)
+        mins, secs = divmod(elapsed, 60)
+        time_str = f"{mins:02d}:{secs:02d}"
+
+        stats_label = self.query_one("#snake-stats", Label)
+        stats_label.update(f"🍎 Puntuación: [bold yellow]{self.score}[/bold yellow]   |   ⏱️ Tiempo: [bold cyan]{time_str}[/bold cyan]")
+
+        board_widget = self.query_one("#snake-board", Static)
+
+        if self.game_over:
+            total_sec = elapsed
+            sec_unit = "segundo" if total_sec == 1 else "segundos"
+            lines = [
+                "",
+                " ╔══════════════════════════════════════════════════╗",
+                " ║                                                  ║",
+                " ║               🎮  ¡GAME OVER!  🎮                ║",
+                " ║                                                  ║",
+                f" ║        🏆 Puntuación Final: {self.score:<16} ║",
+                f" ║        ⏱️  Tiempo Aguantado: {time_str} ({total_sec} {sec_unit:<8}) ║",
+                " ║                                                  ║",
+                " ║        [yellow]Presiona 'R' o 'Enter' para reiniciar[/yellow]     ║",
+                " ║        [cyan]Presiona 'Ctrl+F' para salir[/cyan]              ║",
+                " ║                                                  ║",
+                " ╚══════════════════════════════════════════════════╝",
+                ""
+            ]
+            board_widget.update("\n".join(lines))
+        else:
+            board_rows = []
+            for y in range(self.grid_h):
+                row_cells = []
+                for x in range(self.grid_w):
+                    if (x, y) == self.snake[0]:
+                        row_cells.append("[bold green]██[/bold green]")
+                    elif (x, y) in self.snake:
+                        row_cells.append("[green]██[/green]")
+                    elif (x, y) == self.food:
+                        row_cells.append("[bold red]██[/bold red]")
+                    else:
+                        row_cells.append("  ")
+                board_rows.append("".join(row_cells))
+            board_widget.update("\n".join(board_rows))
 
 class TodoApp(App):
     CSS = """
@@ -7807,6 +8984,10 @@ class TodoApp(App):
     #main-container { width: 100%; height: 1fr; padding: 0 2; }
     #main-container { width: 100%; height: 1fr; padding: 0 2; }
     #tabs-container { width: 100%; height: 3; layout: horizontal; padding: 0 1; }
+    #main-search-container { width: 100%; height: auto; padding: 0 1; margin-top: 1; margin-bottom: 1; }
+    #main-search-container.hidden { display: none; }
+    #main-search-label { color: $text-muted; margin-bottom: 0; margin-left: 1; }
+    #main-search-input { width: 100%; }
     #task-list { width: 100%; height: 1fr; overflow-y: auto; padding: 1; }
     #calendar-view { width: 100%; height: 1fr; padding: 1; display: none; align: center top; }
     #calendar-view.visible { display: block; }
@@ -7816,7 +8997,7 @@ class TodoApp(App):
     #calendar-hint { width: 100%; text-align: center; color: $text-muted; padding: 1; }
     #empty-message { width: 100%; height: 100%; content-align: center middle; color: $text-muted; text-style: italic; }
     #stats { dock: bottom; width: 100%; height: 1; background: $primary-background; color: $text; padding: 0 2; }
-    #completed-separator { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
+    #completed-separator, #completed-separator-subtasks { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
     .section-separator-main {
         width: 100%;
         height: auto;
@@ -7869,9 +9050,10 @@ class TodoApp(App):
         Binding("G", "group_options", "Opc. Grupo"),
         Binding("c", "toggle_calendar", "Calendario"),
         Binding("i", "today_tasks", "Hoy"),
-        Binding("/", "search", "Buscar"),
+        Binding("/", "focus_main_search", "Buscar"),
         Binding("x", "edit_day", "Editar día"),
         Binding("X", "clear_day", "Vaciar día"),
+        Binding("ctrl+g", "open_snake", "Snake", show=False),
         Binding("escape", "handle_escape", show=False),
         Binding("left", "nav_left", show=False),
         Binding("right", "nav_right", show=False),
@@ -7914,6 +9096,7 @@ class TodoApp(App):
         self.CANVAS_GROUP_ID = -3
         self.AUDIO_GROUP_ID = -4
         self.TAGS_GROUP_ID = -5
+        self.SUBTASKS_GROUP_ID = -6
         self.current_group_id: Optional[int] = self.GENERAL_GROUP_ID
         self.data_file = Path.home() / "todo" / "todo_tasks.json"
         self.data_file.parent.mkdir(exist_ok=True)
@@ -7940,6 +9123,10 @@ class TodoApp(App):
         self.redo_stack: list[dict] = []
         self.max_undo = 50
 
+        self.main_search_query = ""
+        self.main_search_focused = False
+        self._explicit_search_focus = False
+
         self.konami_sequence = []
         self.konami_code = ["up", "up", "down", "down", "left", "right", "left", "right", "b", "a"]
         
@@ -7950,15 +9137,34 @@ class TodoApp(App):
         self.filter_tag_ids = []
         self.filter_statuses = []
         self.filter_priorities = []
+        self._clear_main_search()
         self.selected_index = 0
         self.refresh_view()
         self.update_stats()
         self.notify("🔄 Filtros reseteados", severity="information", timeout=2)
     
+    def _clear_main_search(self) -> None:
+        need_refresh = bool(self.main_search_query)
+        self.main_search_query = ""
+        self.main_search_focused = False
+        self._explicit_search_focus = False
+        try:
+            self.query_one("#main-search-input", Input).value = ""
+            self.query_one("#main-search-input", Input).blur()
+        except:
+            pass
+        self.set_focus(None)
+        if need_refresh:
+            self.refresh_view()
+            self.update_stats()
+
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="main-container"):
             yield Horizontal(id="tabs-container")
+            with Container(id="main-search-container"):
+                yield Label("🔍 Buscar (/ para activar | Tab/Esc para salir y volver a atajos):", id="main-search-label")
+                yield UndoableInput(placeholder="Escribe para buscar...", id="main-search-input")
             yield Container(id="task-list")
             with Container(id="calendar-view"):
                 yield Static("", id="calendar-header")
@@ -7974,11 +9180,44 @@ class TodoApp(App):
         self.update_stats()
         self.set_timer(0.1, self.show_today_reminders)
         self.set_interval(10, self.save_data)
+        try:
+            self.query_one("#main-search-input", Input).blur()
+        except:
+            pass
 
     def on_exit(self) -> None:
         self.save_data()
 
+    def action_focus_main_search(self) -> None:
+        if self.calendar_mode:
+            return
+        self.main_search_focused = True
+        self._explicit_search_focus = True
+        try:
+            search_container = self.query_one("#main-search-container", Container)
+            search_container.remove_class("hidden")
+        except:
+            pass
+        self.query_one("#main-search-input", Input).focus()
+
+    def action_blur_main_search(self) -> None:
+        if not self.main_search_focused and not self.main_search_query:
+            return
+        self._clear_main_search()
+
+    @on(Input.Changed, "#main-search-input")
+    async def on_main_search_changed(self, event: Input.Changed) -> None:
+        self.main_search_query = event.value.strip()
+        self.selected_index = 0
+        await self.refresh_view()
+        self.update_stats()
+
+    @on(Input.Submitted, "#main-search-input")
+    def on_main_search_submitted(self, event: Input.Submitted) -> None:
+        self.action_blur_main_search()
+
     def action_today_tasks(self) -> None:
+        if self.main_search_focused: return
         today = date.today()
         tasks, subtasks = self._get_tasks_for_date(today.year, today.month, today.day)
         date_str = f"{today.day}/{today.month}/{today.year}"
@@ -8043,7 +9282,7 @@ class TodoApp(App):
         if self.calendar_mode:
             expected_ids = ["tab-calendar"]
         else:
-            expected_ids = ["tab-general", "tab-all", "tab-notes", "tab-canvas", "tab-audio", "tab-tags"] + [f"tab-{g.id}" for g in self.groups]
+            expected_ids = ["tab-general", "tab-all", "tab-subtasks", "tab-notes", "tab-canvas", "tab-audio", "tab-tags"] + [f"tab-{g.id}" for g in self.groups]
 
         if list(existing_tabs.keys()) == expected_ids:
             if self.calendar_mode:
@@ -8051,6 +9290,7 @@ class TodoApp(App):
             else:
                 existing_tabs["tab-general"].active = (self.current_group_id == self.GENERAL_GROUP_ID)
                 existing_tabs["tab-all"].active = (self.current_group_id is None)
+                existing_tabs["tab-subtasks"].active = (self.current_group_id == self.SUBTASKS_GROUP_ID)
                 existing_tabs["tab-notes"].active = (self.current_group_id == self.NOTES_GROUP_ID)
                 existing_tabs["tab-canvas"].active = (self.current_group_id == self.CANVAS_GROUP_ID)
                 existing_tabs["tab-audio"].active = (self.current_group_id == self.AUDIO_GROUP_ID)
@@ -8064,7 +9304,6 @@ class TodoApp(App):
             return
 
         for child in list(tabs.children):
-            child.id = None
             await child.remove()
         
         if self.calendar_mode:
@@ -8079,6 +9318,10 @@ class TodoApp(App):
             tab = GroupTab(None, "📋 Sin grupo", id="tab-all")
             await tabs.mount(tab)
             tab.active = (self.current_group_id is None)
+
+            tab = GroupTab(self.SUBTASKS_GROUP_ID, "📋 Subtareas", id="tab-subtasks")
+            await tabs.mount(tab)
+            tab.active = (self.current_group_id == self.SUBTASKS_GROUP_ID)
 
             tab = GroupTab(self.NOTES_GROUP_ID, "📝 Notas", id="tab-notes")
             await tabs.mount(tab)
@@ -8137,6 +9380,10 @@ class TodoApp(App):
         if self.filter_priorities:
             tasks = [t for t in tasks if t.priority in self.filter_priorities]
         
+        if self.main_search_query:
+            q = self.main_search_query.lower()
+            tasks = [t for t in tasks if q in t.text.lower()]
+        
         return tasks
     
     def _get_tasks_for_date(self, y: int, m: int, d: int) -> tuple[list[tuple], list[tuple]]:
@@ -8169,6 +9416,15 @@ class TodoApp(App):
         task_list = self.query_one("#task-list", Container)
         calendar_view = self.query_one("#calendar-view", Container)
 
+        try:
+            search_container = self.query_one("#main-search-container", Container)
+            if self.calendar_mode:
+                search_container.add_class("hidden")
+            else:
+                search_container.remove_class("hidden")
+        except:
+            pass
+
         if self.calendar_mode:
             task_list.styles.display = "none"
             calendar_view.add_class("visible")
@@ -8181,6 +9437,8 @@ class TodoApp(App):
             await task_list.remove_children()
             if self.current_group_id == self.GENERAL_GROUP_ID:
                 await self._refresh_general_view(task_list)
+            elif self.current_group_id == self.SUBTASKS_GROUP_ID:
+                await self._refresh_subtasks_list(task_list)
             elif self.current_group_id == self.NOTES_GROUP_ID:
                 await self._refresh_notes_list(task_list)
             elif self.current_group_id == self.CANVAS_GROUP_ID:
@@ -8191,6 +9449,87 @@ class TodoApp(App):
                 await self._refresh_tags_list(task_list)
             else:
                 await self._refresh_task_list(task_list)
+
+    def _get_ordered_subtasks(self, subtask_items: list[tuple[Task, Subtask]] = None) -> list[tuple[Task, Subtask]]:
+        if subtask_items is None:
+            subtask_items = self._get_filtered_all_subtasks()
+        pending = [item for item in subtask_items if not item[1].done]
+        completed = [item for item in subtask_items if item[1].done]
+        return pending + completed
+
+    async def _refresh_subtasks_list(self, task_list: Container) -> None:
+        subtask_items = self._get_filtered_all_subtasks()
+
+        if not subtask_items:
+            msg = "No hay subtareas. Pulsa 'a' para añadir una subtarea a una tarea."
+            await task_list.mount(Label(msg, id="empty-message"))
+        else:
+            pending = [item for item in subtask_items if not item[1].done]
+            completed = [item for item in subtask_items if item[1].done]
+
+            for (task, subtask) in pending:
+                idx = subtask_items.index((task, subtask))
+                item_widget = SubtaskRowWidget(subtask, parent_task=task, all_tags=self.tags, id=f"subtask-row-{idx}")
+                await task_list.mount(item_widget)
+
+            if completed:
+                await task_list.mount(Static("── Completadas ──", id="completed-separator"))
+                for (task, subtask) in completed:
+                    idx = subtask_items.index((task, subtask))
+                    item_widget = SubtaskRowWidget(subtask, parent_task=task, all_tags=self.tags, id=f"subtask-row-{idx}")
+                    await task_list.mount(item_widget)
+
+        self._update_selection_subtasks(subtask_items)
+
+    def _get_filtered_all_subtasks(self) -> list[tuple[Task, Subtask]]:
+        results = []
+        for task in self.tasks:
+            for subtask in task.subtasks:
+                results.append((task, subtask))
+
+        if self.filter_statuses:
+            if "done" in self.filter_statuses and "pending" not in self.filter_statuses:
+                results = [item for item in results if item[1].done]
+            elif "pending" in self.filter_statuses and "done" not in self.filter_statuses:
+                results = [item for item in results if not item[1].done]
+
+        if self.filter_tag_ids:
+            results = [item for item in results if item[1].tags and any(t_id in item[1].tags for t_id in self.filter_tag_ids)]
+
+        if self.filter_priorities:
+            results = [item for item in results if item[1].priority in self.filter_priorities]
+
+        if self.filter_dates:
+            results = [item for item in results if item[1].due_date in self.filter_dates]
+
+        if self.main_search_query:
+            q = self.main_search_query.lower()
+            results = [item for item in results if q in item[1].text.lower() or q in item[0].text.lower()]
+
+        return results
+
+    def _update_selection_subtasks(self, subtask_items: list = None) -> None:
+        if subtask_items is None:
+            subtask_items = self._get_filtered_all_subtasks()
+        ordered = self._get_ordered_subtasks(subtask_items)
+        if not ordered:
+            return
+
+        if self.selected_index >= len(ordered):
+            self.selected_index = len(ordered) - 1
+        if self.selected_index < 0:
+            self.selected_index = 0
+
+        for idx, (task, subtask) in enumerate(ordered):
+            try:
+                orig_idx = subtask_items.index((task, subtask))
+                widget = self.query_one(f"#subtask-row-{orig_idx}", SubtaskRowWidget)
+                is_sel = (idx == self.selected_index)
+                widget.selected = is_sel
+                if is_sel:
+                    widget.scroll_visible()
+            except Exception:
+                pass
 
     async def _refresh_voice_notes_list(self, task_list: Container) -> None:
         filtered_vn = self._get_filtered_voice_notes()
@@ -8215,6 +9554,10 @@ class TodoApp(App):
 
         if self.filter_tag_ids:
             vn_list = [v for v in vn_list if any(tag_id in v.tags for tag_id in self.filter_tag_ids)]
+
+        if self.main_search_query:
+            q = self.main_search_query.lower()
+            vn_list = [v for v in vn_list if q in v.title.lower() or q in v.description.lower()]
 
         vn_list.sort(key=lambda v: v.created_at, reverse=True)
         return vn_list
@@ -8289,6 +9632,10 @@ class TodoApp(App):
         if self.filter_tag_ids:
             notes = [n for n in notes if any(tag_id in n.tags for tag_id in self.filter_tag_ids)]
 
+        if self.main_search_query:
+            q = self.main_search_query.lower()
+            notes = [n for n in notes if q in n.title.lower() or q in n.description.lower()]
+
         notes.sort(key=lambda n: n.created_at, reverse=True)
         return notes
 
@@ -8333,6 +9680,9 @@ class TodoApp(App):
         canvas_list = list(self.canvas_list)
         if self.filter_tag_ids:
             canvas_list = [c for c in canvas_list if any(tag_id in c.tags for tag_id in self.filter_tag_ids)]
+        if self.main_search_query:
+            q = self.main_search_query.lower()
+            canvas_list = [c for c in canvas_list if q in c.title.lower()]
         canvas_list.sort(key=lambda c: c.created_at, reverse=True)
         return canvas_list
 
@@ -8622,6 +9972,9 @@ class TodoApp(App):
             if filters:
                 text += " | Filtros: " + ", ".join(filters)
 
+        if self.main_search_query:
+            text += f" | 🔍 '{self.main_search_query}'"
+
         self.query_one("#stats", Static).update(text)
 
         self.query_one("#stats", Static).update(text)
@@ -8633,10 +9986,14 @@ class TodoApp(App):
         except: return None
     
     def action_quit(self) -> None:
+        if self.main_search_focused: return
         self.save_data()
         self.exit()
     
     async def action_handle_escape(self) -> None:
+        if self.main_search_focused:
+            self._clear_main_search()
+            return
         if self.calendar_mode:
             self.calendar_mode = False
             await self.refresh_tabs()
@@ -8644,6 +10001,7 @@ class TodoApp(App):
             self.update_stats()
     
     async def action_nav_left(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode:
             d = date(self.cal_year, self.cal_month, self.cal_day) - timedelta(days=1)
             self.cal_year, self.cal_month, self.cal_day = d.year, d.month, d.day
@@ -8653,6 +10011,7 @@ class TodoApp(App):
             await self._prev_group()
     
     async def action_nav_right(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode:
             d = date(self.cal_year, self.cal_month, self.cal_day) + timedelta(days=1)
             self.cal_year, self.cal_month, self.cal_day = d.year, d.month, d.day
@@ -8662,6 +10021,7 @@ class TodoApp(App):
             await self._next_group()
     
     async def action_nav_up(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode:
             d = date(self.cal_year, self.cal_month, self.cal_day) - timedelta(days=7)
             self.cal_year, self.cal_month, self.cal_day = d.year, d.month, d.day
@@ -8683,6 +10043,11 @@ class TodoApp(App):
                     self.query_one("#task-list", Container).scroll_up()
                 except Exception:
                     pass
+        elif self.current_group_id == self.SUBTASKS_GROUP_ID:
+            ordered = self._get_ordered_subtasks()
+            if ordered and self.selected_index > 0:
+                self.selected_index -= 1
+                self._update_selection_subtasks()
         elif self.current_group_id == self.NOTES_GROUP_ID:
             notes = self._get_filtered_notes()
             if notes and self.selected_index > 0:
@@ -8707,6 +10072,7 @@ class TodoApp(App):
                 self._update_selection(pending, completed)
     
     async def action_nav_down(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode:
             d = date(self.cal_year, self.cal_month, self.cal_day) + timedelta(days=7)
             self.cal_year, self.cal_month, self.cal_day = d.year, d.month, d.day
@@ -8744,6 +10110,11 @@ class TodoApp(App):
                     self.query_one("#task-list", Container).scroll_up()
                 except Exception:
                     pass
+        elif self.current_group_id == self.SUBTASKS_GROUP_ID:
+            ordered = self._get_ordered_subtasks()
+            if ordered and self.selected_index < len(ordered) - 1:
+                self.selected_index += 1
+                self._update_selection_subtasks()
         elif self.current_group_id == self.NOTES_GROUP_ID:
             notes = self._get_filtered_notes()
             if notes and self.selected_index < len(notes) - 1:
@@ -8792,7 +10163,32 @@ class TodoApp(App):
                     await task_list.mount(w)
                     items.append(("task", t, w_id))
 
-        # 2. Notas
+        # 2. Subtareas
+        await task_list.mount(Static("── 📋 SUBTAREAS ──", classes="section-separator-main"))
+        filtered_subtasks = self._get_filtered_all_subtasks()
+        if not filtered_subtasks:
+            await task_list.mount(Label(" (Sin subtareas) ", classes="empty-section-label"))
+        else:
+            pending_subtasks = [s for s in filtered_subtasks if not s[1].done]
+            completed_subtasks = [s for s in filtered_subtasks if s[1].done]
+
+            for parent_task, subtask in pending_subtasks:
+                s_idx = filtered_subtasks.index((parent_task, subtask))
+                w_id = f"general-subtask-{s_idx}"
+                w = SubtaskRowWidget(subtask, parent_task=parent_task, all_tags=self.tags, id=w_id)
+                await task_list.mount(w)
+                items.append(("subtask", subtask, w_id))
+
+            if completed_subtasks:
+                await task_list.mount(Static("── Completadas ──", id="completed-separator-subtasks"))
+                for parent_task, subtask in completed_subtasks:
+                    s_idx = filtered_subtasks.index((parent_task, subtask))
+                    w_id = f"general-subtask-{s_idx}"
+                    w = SubtaskRowWidget(subtask, parent_task=parent_task, all_tags=self.tags, id=w_id)
+                    await task_list.mount(w)
+                    items.append(("subtask", subtask, w_id))
+
+        # 3. Notas
         await task_list.mount(Static("── 📝 NOTAS ──", classes="section-separator-main"))
         filtered_notes = self._get_filtered_notes()
         if not filtered_notes:
@@ -8809,7 +10205,7 @@ class TodoApp(App):
                 await task_list.mount(w)
                 items.append(("note", note, w_id))
 
-        # 3. Pizarras
+        # 4. Pizarras
         await task_list.mount(Static("── 🎨 PIZARRAS ──", classes="section-separator-main"))
         filtered_canvas = self._get_filtered_canvas()
         if not filtered_canvas:
@@ -8826,7 +10222,7 @@ class TodoApp(App):
                 await task_list.mount(w)
                 items.append(("canvas", canvas, w_id))
 
-        # 4. Audios
+        # 5. Audios
         await task_list.mount(Static("── 🎤 AUDIOS ──", classes="section-separator-main"))
         filtered_vn = self._get_filtered_voice_notes()
         if not filtered_vn:
@@ -8843,12 +10239,13 @@ class TodoApp(App):
                 await task_list.mount(w)
                 items.append(("voice_note", vn, w_id))
 
-        # 5. Etiquetas
+        # 6. Etiquetas
         await task_list.mount(Static("── 🏷️ ETIQUETAS ──", classes="section-separator-main"))
-        if not self.tags:
+        filtered_tags = self._get_filtered_tags()
+        if not filtered_tags:
             await task_list.mount(Label(" (Sin etiquetas) ", classes="empty-section-label"))
         else:
-            for tag in self.tags:
+            for tag in filtered_tags:
                 count = sum(1 for t in self.tasks if tag.id in t.tags)
                 w_id = f"tag-{tag.id}"
                 w = TagWidget(tag, task_count=count, id=w_id)
@@ -8867,6 +10264,17 @@ class TodoApp(App):
             items.append(("task", t, f"task-{t.id}"))
         for t in completed:
             items.append(("task", t, f"task-{t.id}"))
+
+        filtered_subtasks = self._get_filtered_all_subtasks()
+        pending_subtasks = [s for s in filtered_subtasks if not s[1].done]
+        completed_subtasks = [s for s in filtered_subtasks if s[1].done]
+
+        for parent_task, subtask in pending_subtasks:
+            s_idx = filtered_subtasks.index((parent_task, subtask))
+            items.append(("subtask", subtask, f"general-subtask-{s_idx}"))
+        for parent_task, subtask in completed_subtasks:
+            s_idx = filtered_subtasks.index((parent_task, subtask))
+            items.append(("subtask", subtask, f"general-subtask-{s_idx}"))
 
         for note in self._get_filtered_notes():
             items.append(("note", note, f"note-{note.id}"))
@@ -8905,6 +10313,8 @@ class TodoApp(App):
             try:
                 if item_type == "task":
                     w = self.query_one(f"#{widget_id}", TaskWidget)
+                elif item_type == "subtask":
+                    w = self.query_one(f"#{widget_id}", SubtaskRowWidget)
                 elif item_type == "note":
                     w = self.query_one(f"#{widget_id}", NoteWidget)
                 elif item_type == "canvas":
@@ -8956,7 +10366,11 @@ class TodoApp(App):
         self._update_selection_tags(filtered_tags)
 
     def _get_filtered_tags(self) -> list[Tag]:
-        return list(self.tags)
+        tags = list(self.tags)
+        if self.main_search_query:
+            q = self.main_search_query.lower()
+            tags = [t for t in tags if q in t.name.lower()]
+        return tags
 
     def _update_selection_tags(self, tags: list = None) -> None:
         if tags is None:
@@ -9038,6 +10452,7 @@ class TodoApp(App):
             self._update_selection(pending, completed)
     
     def action_next_month(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode:
             self.cal_month += 1
             if self.cal_month > 12:
@@ -9047,6 +10462,7 @@ class TodoApp(App):
             self.update_stats()
     
     def action_prev_month(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode:
             self.cal_month -= 1
             if self.cal_month < 1:
@@ -9066,30 +10482,34 @@ class TodoApp(App):
         self.calendar_mode = False
         self.current_group_id = group_id
         self.selected_index = 0
+        self._clear_main_search()
         await self.refresh_tabs()
         await self.refresh_view()
         self.update_stats()
 
     async def _prev_group(self) -> None:
-        ids = [self.GENERAL_GROUP_ID, None, self.NOTES_GROUP_ID, self.CANVAS_GROUP_ID, self.AUDIO_GROUP_ID, self.TAGS_GROUP_ID] + [g.id for g in self.groups]
+        ids = [self.GENERAL_GROUP_ID, None, self.SUBTASKS_GROUP_ID, self.NOTES_GROUP_ID, self.CANVAS_GROUP_ID, self.AUDIO_GROUP_ID, self.TAGS_GROUP_ID] + [g.id for g in self.groups]
         idx = (ids.index(self.current_group_id) - 1) % len(ids)
         await self._select_group_by_id(ids[idx])
 
     async def _next_group(self) -> None:
-        ids = [self.GENERAL_GROUP_ID, None, self.NOTES_GROUP_ID, self.CANVAS_GROUP_ID, self.AUDIO_GROUP_ID, self.TAGS_GROUP_ID] + [g.id for g in self.groups]
+        ids = [self.GENERAL_GROUP_ID, None, self.SUBTASKS_GROUP_ID, self.NOTES_GROUP_ID, self.CANVAS_GROUP_ID, self.AUDIO_GROUP_ID, self.TAGS_GROUP_ID] + [g.id for g in self.groups]
         idx = (ids.index(self.current_group_id) + 1) % len(ids)
         await self._select_group_by_id(ids[idx])
         
     async def action_toggle_calendar(self) -> None:
+        if self.main_search_focused: return
         self.calendar_mode = not self.calendar_mode
         if self.calendar_mode:
             today = date.today()
             self.cal_year, self.cal_month, self.cal_day = today.year, today.month, today.day
+            self._clear_main_search()
         await self.refresh_tabs()
         await self.refresh_view()
         self.update_stats()
     
     def action_action_enter(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode:
             tasks, subtasks = self._get_tasks_for_date(self.cal_year, self.cal_month, self.cal_day)
             date_str = f"{self.cal_day}/{self.cal_month}/{self.cal_year}"
@@ -9110,8 +10530,8 @@ class TodoApp(App):
                     self.action_edit_canvas(obj)
                 elif itype == "voice_note":
                     self.action_play_voice_note(obj)
-                elif itype == "task":
-                    self.action_toggle_done()
+                elif itype in ("task", "subtask"):
+                    self.call_later(self.action_toggle_done)
         elif self.current_group_id == self.NOTES_GROUP_ID:
             self.action_view_note()
         elif self.current_group_id == self.CANVAS_GROUP_ID:
@@ -9122,7 +10542,29 @@ class TodoApp(App):
             self.action_toggle_done()
     
     async def action_toggle_done(self) -> None:
+        if self.main_search_focused: return
         if not self.calendar_mode:
+            if self.current_group_id == self.SUBTASKS_GROUP_ID:
+                subtasks = self._get_ordered_subtasks()
+                if subtasks and 0 <= self.selected_index < len(subtasks):
+                    self._save_undo_state()
+                    parent_task, subtask = subtasks[self.selected_index]
+                    subtask.done = not subtask.done
+                    self.save_data()
+                    self.update_stats()
+                    await self.refresh_view()
+                return
+            if self.current_group_id == self.GENERAL_GROUP_ID:
+                item = self._get_selected_general_item()
+                if item:
+                    itype, obj = item
+                    if itype in ("task", "subtask"):
+                        self._save_undo_state()
+                        obj.done = not obj.done
+                        self.save_data()
+                        self.update_stats()
+                        await self.refresh_view()
+                return
             w = self.get_selected_widget()
             if w:
                 self._save_undo_state()
@@ -9272,6 +10714,7 @@ class TodoApp(App):
         self.push_screen(UnscheduledItemsModal(self.tasks, self.groups), on_result)
     
     def action_filter_tasks(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode: return
 
         if self.current_group_id == self.CANVAS_GROUP_ID:
@@ -9321,6 +10764,7 @@ class TodoApp(App):
         )
     
     def action_sort_tasks(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode:
             return
         
@@ -9334,6 +10778,7 @@ class TodoApp(App):
         self.push_screen(SortPickerModal(self.sort_criteria), on_result)
     
     def action_new_group(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode: return
         async def on_result(name: Optional[str]) -> None:
             if name:
@@ -9351,6 +10796,7 @@ class TodoApp(App):
         self.push_screen(InputModal("Nuevo Grupo", placeholder="Nombre..."), on_result)
     
     def action_group_options(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode or self.current_group_id is None or self.current_group_id == self.GENERAL_GROUP_ID:
             return
         g = next((x for x in self.groups if x.id == self.current_group_id), None)
@@ -9441,9 +10887,160 @@ class TodoApp(App):
         
         self.app.push_screen(CommentsModal(subtask.comments, next_comment_id), on_result)
     
+    def action_add_subtask_tab(self) -> None:
+        if not self.tasks:
+            self.notify("⚠️ No hay tareas disponibles donde añadir una subtarea", severity="warning")
+            return
+
+        def on_task_selected(selected_task: Optional[Task]) -> None:
+            if selected_task:
+                def on_subtask_text(text: Optional[str]) -> None:
+                    if text:
+                        self._save_undo_state()
+                        new_subtask = Subtask(id=self.next_subtask_id, text=text)
+                        self.next_subtask_id += 1
+                        selected_task.subtasks.append(new_subtask)
+                        self.save_data()
+                        self.update_stats()
+                        self.call_later(self.refresh_view)
+                        self.notify("✅ Subtarea creada (Ctrl+Z para deshacer)", severity="information", timeout=2)
+                self.push_screen(InputModal("📋 Nueva Subtarea", placeholder="Descripción..."), on_subtask_text)
+
+        self.push_screen(TaskPickerModal(self.tasks), on_task_selected)
+
+    def action_edit_subtask_tab(self) -> None:
+        subtasks_items = self._get_ordered_subtasks()
+        if not subtasks_items or self.selected_index < 0 or self.selected_index >= len(subtasks_items):
+            return
+        parent_task, subtask = subtasks_items[self.selected_index]
+
+        next_comment_id = max((c.id for c in subtask.comments), default=0) + 1 if subtask.comments else 1
+
+        def on_result(result: Optional[dict]) -> None:
+            if result:
+                self._save_undo_state()
+                subtask.text = result["text"]
+                subtask.comments = result.get("comments", [])
+                subtask.tags = result.get("tags", [])
+                subtask.priority = result.get("priority", 0)
+                subtask.due_date = result.get("due_date", "")
+                subtask.notes = result.get("notes", [])
+                subtask.voice_notes = result.get("voice_notes", [])
+                subtask.canvas_list = result.get("canvas_list", [])
+
+                for n in subtask.notes:
+                    if not any(gn.id == n.id for gn in self.notes):
+                        self.notes.append(n)
+                for v in subtask.voice_notes:
+                    if not any(gv.id == v.id for gv in self.voice_notes):
+                        self.voice_notes.append(v)
+                for c in subtask.canvas_list:
+                    if not any(gc.id == c.id for gc in self.canvas_list):
+                        self.canvas_list.append(c)
+
+                self.save_data()
+                self.update_stats()
+                self.call_later(self.refresh_view)
+                self.notify("✏️ Subtarea editada (Ctrl+Z para deshacer)", severity="information", timeout=2)
+
+        self.push_screen(
+            EditSubtaskModal(subtask.text, subtask.comments, next_comment_id,
+                           all_tags=self.tags, selected_tags=subtask.tags,
+                           priority=subtask.priority, due_date=subtask.due_date,
+                           notes=getattr(subtask, 'notes', []),
+                           voice_notes=getattr(subtask, 'voice_notes', []),
+                           canvas_list=getattr(subtask, 'canvas_list', []),
+                           global_notes=self.notes,
+                           global_voice_notes=self.voice_notes,
+                           global_canvas_list=self.canvas_list),
+            on_result
+        )
+
+    def action_delete_subtask_tab(self) -> None:
+        subtasks_items = self._get_ordered_subtasks()
+        if not subtasks_items or self.selected_index < 0 or self.selected_index >= len(subtasks_items):
+            return
+        parent_task, subtask = subtasks_items[self.selected_index]
+
+        txt = subtask.text[:30] + "..." if len(subtask.text) > 30 else subtask.text
+        async def on_confirm(yes: bool) -> None:
+            if yes:
+                self._save_undo_state()
+                if subtask in parent_task.subtasks:
+                    parent_task.subtasks.remove(subtask)
+                self.save_data()
+                self.update_stats()
+                await self.refresh_view()
+                self.notify("🗑️ Subtarea eliminada (Ctrl+Z para deshacer)", severity="information", timeout=2)
+
+        self.push_screen(ConfirmModal(f"¿Eliminar la subtarea '{txt}'?"), on_confirm)
+
+    def _edit_subtask_obj(self, subtask: Subtask) -> None:
+        next_comment_id = max((c.id for c in subtask.comments), default=0) + 1 if subtask.comments else 1
+
+        def on_result(result: Optional[dict]) -> None:
+            if result:
+                self._save_undo_state()
+                subtask.text = result["text"]
+                subtask.comments = result.get("comments", [])
+                subtask.tags = result.get("tags", [])
+                subtask.priority = result.get("priority", 0)
+                subtask.due_date = result.get("due_date", "")
+                subtask.notes = result.get("notes", [])
+                subtask.voice_notes = result.get("voice_notes", [])
+                subtask.canvas_list = result.get("canvas_list", [])
+
+                for n in subtask.notes:
+                    if not any(gn.id == n.id for gn in self.notes):
+                        self.notes.append(n)
+                for v in subtask.voice_notes:
+                    if not any(gv.id == v.id for gv in self.voice_notes):
+                        self.voice_notes.append(v)
+                for c in subtask.canvas_list:
+                    if not any(gc.id == c.id for gc in self.canvas_list):
+                        self.canvas_list.append(c)
+
+                self.save_data()
+                self.update_stats()
+                self.call_later(self.refresh_view)
+                self.notify("✏️ Subtarea editada (Ctrl+Z para deshacer)", severity="information", timeout=2)
+
+        self.push_screen(
+            EditSubtaskModal(subtask.text, subtask.comments, next_comment_id,
+                           all_tags=self.tags, selected_tags=subtask.tags,
+                           priority=subtask.priority, due_date=subtask.due_date,
+                           notes=getattr(subtask, 'notes', []),
+                           voice_notes=getattr(subtask, 'voice_notes', []),
+                           canvas_list=getattr(subtask, 'canvas_list', []),
+                           global_notes=self.notes,
+                           global_voice_notes=self.voice_notes,
+                           global_canvas_list=self.canvas_list),
+            on_result
+        )
+
+    def _delete_subtask_obj(self, subtask: Subtask) -> None:
+        parent_task = next((t for t in self.tasks if subtask in t.subtasks), None)
+        txt = subtask.text[:30] + "..." if len(subtask.text) > 30 else subtask.text
+        async def on_confirm(yes: bool) -> None:
+            if yes:
+                self._save_undo_state()
+                if parent_task and subtask in parent_task.subtasks:
+                    parent_task.subtasks.remove(subtask)
+                self.save_data()
+                self.update_stats()
+                await self.refresh_view()
+                self.notify("🗑️ Subtarea eliminada (Ctrl+Z para deshacer)", severity="information", timeout=2)
+
+        self.push_screen(ConfirmModal(f"¿Eliminar la subtarea '{txt}'?"), on_confirm)
+
     def action_add_task(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode:
             self.action_assign_tasks_from_calendar()
+            return
+
+        if self.current_group_id == self.SUBTASKS_GROUP_ID:
+            self.action_add_subtask_tab()
             return
 
         if self.current_group_id == self.NOTES_GROUP_ID:
@@ -9481,7 +11078,12 @@ class TodoApp(App):
         self.push_screen(InputModal("Nueva Tarea", placeholder="Escribe la tarea..."), on_result)
     
     def action_edit_task(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode: return
+
+        if self.current_group_id == self.SUBTASKS_GROUP_ID:
+            self.action_edit_subtask_tab()
+            return
 
         if self.current_group_id == self.NOTES_GROUP_ID:
             self.action_edit_note()
@@ -9514,6 +11116,9 @@ class TodoApp(App):
                     return
                 elif itype == "tag":
                     self.action_edit_tag(obj)
+                    return
+                elif itype == "subtask":
+                    self._edit_subtask_obj(obj)
                     return
 
         w = self.get_selected_widget()
@@ -9578,7 +11183,12 @@ class TodoApp(App):
                                     t.canvas_list, next_canvas_id), on_result)
         
     def action_delete_task(self) -> None:
+        if self.main_search_focused: return
         if self.calendar_mode: return
+
+        if self.current_group_id == self.SUBTASKS_GROUP_ID:
+            self.action_delete_subtask_tab()
+            return
 
         if self.current_group_id == self.NOTES_GROUP_ID:
             self.action_delete_note()
@@ -9611,6 +11221,9 @@ class TodoApp(App):
                     return
                 elif itype == "tag":
                     self.action_delete_tag(obj)
+                    return
+                elif itype == "subtask":
+                    self._delete_subtask_obj(obj)
                     return
 
         ordered = self._get_ordered_tasks()
@@ -10218,6 +11831,21 @@ class TodoApp(App):
                     created_at=c.get("created_at", "")
                 ) for c in s.get("comments", [])]
                 
+                subtask_notes = [Note(
+                    id=n["id"], title=n.get("title", ""), description=n.get("description", ""),
+                    url=n.get("url"), image_path=n.get("image_path"), file_path=n.get("file_path"),
+                    created_at=n.get("created_at", ""), tags=n.get("tags", [])
+                ) for n in s.get("notes", [])]
+                subtask_voice_notes = [VoiceNote(
+                    id=v["id"], title=v.get("title", ""), audio_path=v.get("audio_path", ""),
+                    description=v.get("description", ""), duration=v.get("duration", 0.0),
+                    created_at=v.get("created_at", ""), tags=v.get("tags", [])
+                ) for v in s.get("voice_notes", [])]
+                subtask_canvas_list = [Canvas(
+                    id=c["id"], title=c.get("title", ""), width=c.get("width", 50),
+                    height=c.get("height", 20), grid=c.get("grid", []), created_at=c.get("created_at", "")
+                ) for c in s.get("canvas", [])]
+                
                 subtask = Subtask(
                     id=s["id"],
                     text=s["text"],
@@ -10226,7 +11854,10 @@ class TodoApp(App):
                     due_date=s.get("due_date"),
                     comments=subtask_comments,
                     tags=s.get("tags", []),
-                    priority=s.get("priority", 0)
+                    priority=s.get("priority", 0),
+                    notes=subtask_notes,
+                    voice_notes=subtask_voice_notes,
+                    canvas_list=subtask_canvas_list
                 )
                 subtasks.append(subtask)
             
@@ -10387,7 +12018,21 @@ class TodoApp(App):
                             "image_path": c.image_path,
                             "file_path": c.file_path,
                             "created_at": c.created_at
-                        } for c in s.comments]
+                        } for c in s.comments],
+                        "notes": [{
+                            "id": n.id, "title": n.title, "description": n.description,
+                            "url": n.url, "image_path": n.image_path, "file_path": n.file_path,
+                            "created_at": n.created_at, "tags": n.tags
+                        } for n in getattr(s, 'notes', [])],
+                        "voice_notes": [{
+                            "id": v.id, "title": v.title, "audio_path": v.audio_path,
+                            "description": v.description, "duration": v.duration,
+                            "created_at": v.created_at, "tags": v.tags
+                        } for v in getattr(s, 'voice_notes', [])],
+                        "canvas": [{
+                            "id": c.id, "title": c.title, "width": c.width,
+                            "height": c.height, "grid": c.grid, "created_at": c.created_at
+                        } for c in getattr(s, 'canvas_list', [])]
                     } for s in t.subtasks],
                     "notes": [{
                         "id": n.id,
@@ -10716,7 +12361,23 @@ class TodoApp(App):
 
         self.push_screen(ConfirmModal(f"¿Eliminar etiqueta '{tag.name}'?"), on_confirm)
 
+    def action_open_snake(self) -> None:
+        if self.main_search_focused:
+            return
+        self.push_screen(SnakeModal())
+
     def on_key(self, event) -> None:
+        if event.key.lower() == "ctrl+g":
+            event.prevent_default()
+            event.stop()
+            self.action_open_snake()
+            return
+        if self.main_search_focused:
+            if event.key == "tab":
+                event.prevent_default()
+                event.stop()
+                self.action_blur_main_search()
+            return
         key = event.key
         if key in ["up", "down", "left", "right"]:
             self.check_konami_code(key)
