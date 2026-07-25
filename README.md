@@ -32,6 +32,17 @@ Una aplicación de gestión de tareas moderna y completa para la terminal, const
 - **Etiquetas** personalizables e ilimitadas por tarea/subtarea
 - **Auto-guardado** cada 10 segundos (silencioso)
 
+### 🕒 Reloj Inamovible & Modal de Herramientas de Tiempo (`Ctrl+T`)
+- **Reloj Superior Inamovible**: Muestra la fecha y hora en tiempo real con formato `dd/mm/yyyy HH:MM:SS` fijo en la esquina superior derecha, inmune al desplazamiento horizontal de pestañas cuando se crean múltiples grupos.
+- **Modal de Herramientas de Tiempo**: Acceso inmediato presionando `Ctrl+T` en cualquier momento.
+- **Navegación por Pestañas Horizontales**: Cambio de grupo/modo con las flechas (`←` / `→` o `h` / `l`):
+  - ⏱️ **Cronómetro**: Medición de tiempo transcurrido en dígitos ASCII (`Espacio` Iniciar/Pausar, `R` Reiniciar).
+  - 🍅 **Pomodoro**: Ciclos de enfoque/descanso personalizables (`S` Configurar, `Espacio` Iniciar/Pausar, `R` Reiniciar).
+  - ⏲️ **Temporizador**: Cuenta regresiva con nombre de actividad y alerta/notificación al finalizar (`S` Configurar, `Espacio` Iniciar/Pausar, `R` Reiniciar).
+  - 🕐 **Reloj Digital**: Reloj digital en arte ASCII con fecha completa en español.
+- **Ejecución en Segundo Plano** ⭐ NUEVO: Al pulsar `Esc` la ventana se oculta pero los temporizadores **siguen corriendo en segundo plano**. Las notificaciones de Pomodoro y Temporizador se reciben incluso con la ventana cerrada. Al volver a abrir con `Ctrl+T` el estado se mantiene intacto.
+- **Cierre Completo con `Q`**: Al pulsar `Q` se **detienen y reinician** todos los temporizadores y se cierra la ventana por completo.
+
 ### 📝 Notas, 🎨 Pizarras y 🎤 Notas de Voz
 - **Notas**: Almacena notas de texto globales o integradas en tareas y subtareas
 - **Pizarras**: Dibujos y esquemas visuales vinculados o independientes
@@ -119,23 +130,6 @@ MyTaskit incluye un potente sistema de **undo/redo** que te permite deshacer y r
 ✅ Asignar **fechas** desde el calendario  
 ✅ Cambios en **comentarios** y **prioridades**  
 
-### Ejemplo de uso
-```
-1. Cambias el estado de una tarea a "En espera" o eliminas una por error
-   → Presionas Ctrl+Z
-   → La tarea vuelve a su estado/existencia previa
-
-2. Presionas Ctrl+Z varias veces
-   → Deshaces múltiples acciones
-
-3. Quieres rehacer una acción
-   → Presionas Ctrl+Y
-   → Se restaura la acción
-
-4. Haces una nueva edición
-   → El historial de rehacer se limpia automáticamente
-```
-
 ---
 
 ## 🚀 Instalación
@@ -157,17 +151,6 @@ pip install textual
 python MyTaskit.py
 ```
 
-### Instalación de Dependencias
-```bash
-pip install textual
-```
-
-### Ubicación de Datos
-
-Los datos se guardan automáticamente en:
-- **Linux/macOS**: `~/todo/todo_tasks.json`
-- **Windows**: `C:\Users\TuUsuario\todo\todo_tasks.json`
-
 ---
 
 ## 📖 Uso
@@ -183,28 +166,13 @@ Los datos se guardan automáticamente en:
    - Presiona `a` para añadir una tarea
    - Escribe el texto y presiona Enter
 
-3. **Asignar estado a una tarea/subtarea**:
-   - Presiona `e` para editar la tarea/subtarea
-   - Selecciona `🔄 Cambiar Estado` para alternar entre *En progreso*, *En espera* y *Completado*
+3. **Herramientas de Tiempo**:
+   - Presiona `Ctrl+T` para abrir la ventana de Reloj/Cronómetro/Pomodoro/Temporizador.
+   - Usa `←` / `→` o `h` / `l` para navegar entre herramientas.
 
-4. **Organizar con grupos**:
-   - Presiona `g` para crear un grupo
-   - Usa `←` `→` para navegar entre grupos
-
-5. **Marcar como completada**:
+4. **Marcar como completada**:
    - Selecciona una tarea con `↑` `↓`
    - Presiona `Espacio` o `Enter`
-
-### Flujo de Trabajo Típico
-```
-1. Crear grupos por proyecto/contexto
-2. Añadir tareas y subtareas a cada grupo
-3. Asignar estados (En progreso / En espera / Completado), prioridades y fechas
-4. Añadir etiquetas para categorización
-5. Filtrar (f) y ordenar (o) según necesites
-6. Marcar como completadas al terminar
-7. Deshacer con Ctrl+Z si cometes un error
-```
 
 ---
 
@@ -219,7 +187,18 @@ Los datos se guardan automáticamente en:
 | `Espacio` | Marcar/Desmarcar como completada (Conmuta estado a Completado / En progreso) |
 | `Enter` | Marcar/Desmarcar como completada |
 
-### Deshacer/Rehacer ⭐
+### Herramientas de Tiempo
+| Tecla | Acción |
+|-------|--------|
+| `Ctrl+T` | Abrir/cerrar modal de Reloj, Cronómetro, Pomodoro y Temporizador |
+| `←` / `→` o `h` / `l` | Cambiar de grupo/herramienta de tiempo en el modal |
+| `Espacio` | Iniciar / Pausar (Cronómetro / Pomodoro / Temporizador) |
+| `R` | Reiniciar tiempo |
+| `S` | Configurar tiempos (Pomodoro / Temporizador) |
+| `Esc` | **Ocultar** modal (los temporizadores siguen corriendo en segundo plano) |
+| `Q` | **Cerrar y apagar** (detiene y reinicia todos los temporizadores) |
+
+### Deshacer/Rehacer
 | Tecla | Acción |
 |-------|--------|
 | `Ctrl+Z` | Deshacer última acción (hasta 50 acciones) |
@@ -246,23 +225,6 @@ Los datos se guardan automáticamente en:
 | `o` | Abrir modal de ordenación |
 | `/` | Buscar tareas y subtareas por texto |
 
-### Etiquetas
-| Tecla | Acción |
-|-------|--------|
-| `T` | Gestionar etiquetas globales |
-| (En edición) | Asignar etiquetas a tarea o subtarea |
-
-### Calendario
-| Tecla | Acción |
-|-------|--------|
-| `c` | Activar/Desactivar modo calendario |
-| `i` | Ver tareas de HOY |
-| `←` `→` `↑` `↓` | Navegar por días/semanas |
-| `n` `p` | Mes siguiente/anterior |
-| `t` | Ir a hoy |
-| `a` | Asignar fecha a tareas sin fecha |
-| `Enter` | Ver tareas del día seleccionado |
-
 ### Minijuego Snake 🐍
 | Tecla | Acción |
 |-------|--------|
@@ -271,21 +233,15 @@ Los datos se guardan automáticamente en:
 | `R` / `Enter` | Reiniciar partida tras Game Over |
 | `Ctrl+F` / `Esc` | Salir del juego |
 
-### Sistema
-| Tecla | Acción |
-|-------|--------|
-| `q` | Salir (guarda automáticamente) |
-| `Esc` | Cancelar/Cerrar modal |
-
 ---
 
 ## 🖼️ Capturas / Esquemas de Pantalla
 
-### Vista Principal con Secciones de Estado
+### Vista Principal con Reloj Inamovible y Secciones
 ```
 ┌─ 📋 TODO App ─────────────────────────────────────────────────────────────┐
-│  📚 General   📋 Sin grupo   📁 Trabajo   📁 Personal                      │
-├───────────────────────────────────────────────────────────────────────────┤
+│  📚 General   📋 Sin grupo   📁 Trabajo    │ 🕒 25/07/2026 15:35:00       │
+├────────────────────────────────────────────┴──────────────────────────────┤
 │                             ── En progreso ──                             │
 │ ☐ ⬆  Revisar propuesta cliente 🔄 En progreso  Urgente 💬2 🔗1  📅 08/01  │
 │                             ── En espera ──                               │
@@ -297,98 +253,23 @@ Los datos se guardan automáticamente en:
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Modal de Filtros de Subtareas (`Filtrar Subtareas`)
+### Modal de Herramientas de Tiempo (`Ctrl+T`)
 ```
-┌─ 🔍 Filtrar Subtareas ────────────────────────────────────┐
-│ Fecha:                                                   │
-│  📅 08/01, 10/01                [📅 Seleccionar] [❌ Quitar]│
-│ Etiquetas:                                               │
-│  🏷️ Urgente, Personal           [🏷️ Seleccionar] [❌ Quitar]│
-│ Estado:                                                  │
-│  🔄 En progreso, ⏳ En espera   [✓ Seleccionar] [❌ Quitar] │
-│ Prioridad:                                               │
-│  ⭐ Alta, Media                 [⭐ Seleccionar] [❌ Quitar] │
-│                                                          │
-│            [Aplicar] [Quitar todos]                      │
-└──────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🗂️ Estructura de Datos
-
-El archivo `todo_tasks.json` incluye la propiedad `status` para tareas y subtareas:
-```json
-{
-  "next_task_id": 4,
-  "next_group_id": 3,
-  "next_tag_id": 4,
-  "groups": [
-    {"id": 1, "name": "Trabajo"},
-    {"id": 2, "name": "Personal"}
-  ],
-  "tags": [
-    {"id": 1, "name": "Urgente"},
-    {"id": 2, "name": "Importante"}
-  ],
-  "tasks": [
-    {
-      "id": 1,
-      "text": "Revisar propuesta cliente",
-      "done": false,
-      "status": "En progreso",
-      "created_at": "08/01 14:30",
-      "group_id": 1,
-      "due_date": "2026-01-08",
-      "priority": 3,
-      "tags": [1],
-      "subtasks": [
-        {
-          "id": 1,
-          "text": "Revisar tabla de precios",
-          "done": false,
-          "status": "En espera",
-          "priority": 2
-        }
-      ],
-      "comments": [
-        {
-          "id": 1,
-          "title": "Documento borrador",
-          "url": "https://docs.google.com/..."
-        }
-      ]
-    }
-  ]
-}
-```
-
----
-
-## 🎯 Casos de Uso
-
-### Para Desarrolladores
-```
-✅ Gestión de issues/bugs por proyecto en progreso o en espera
-✅ Seguimiento de tareas de sprint
-✅ Lista de features pendientes
-✅ Recordatorios de code review
-```
-
-### Para Estudiantes
-```
-✅ Tareas por asignatura
-✅ Fechas de exámenes y entregas
-✅ Proyectos grupales
-✅ Material de estudio pendiente
-```
-
-### Para Uso Personal
-```
-✅ Lista de compras
-✅ Tareas del hogar
-✅ Recordatorios médicos
-✅ Planificación de eventos
+┌─ 🕐 Herramientas de Tiempo ──────────────────────────────────────────┐
+│  [⏱️ Cronómetro]  [🍅 Pomodoro]  [⏲️ Temporizador]  [🕐 Reloj]       │
+│                                                                      │
+│   ██████  ██████     ██████  ██████     ██████  ██████               │
+│   █    █  █    █        █    █    █     █    █  █    █               │
+│   █    █  █    █     ████    ████       █    █  █    █               │
+│   █    █  █    █     █          █       █    █  █    █               │
+│   ██████  ██████     ██████  ██████     ██████  ██████               │
+│                                                                      │
+│   🍅 Pomodoro - Estado: 🎯 FOCUS                                     │
+│   ▶️ En marcha                                                       │
+│                                                                      │
+│   ←/→: Cambiar | Espacio: Pausar | R: Reset | S: Config             │
+│   Esc: Ocultar (sigue corriendo) | Q: Apagar                        │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
