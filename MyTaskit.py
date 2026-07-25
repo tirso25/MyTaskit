@@ -291,6 +291,7 @@ class Subtask:
     id: int
     text: str
     done: bool = False
+    status: str = "En progreso"
     created_at: str = ""
     due_date: Optional[str] = None
     comments: list = None
@@ -313,6 +314,24 @@ class Subtask:
             self.voice_notes = []
         if self.canvas_list is None:
             self.canvas_list = []
+        if self.done:
+            self.status = "Completado"
+        elif self.status == "Completado":
+            self.done = True
+        elif not self.status:
+            self.status = "En progreso"
+
+    def set_status(self, new_status: str) -> None:
+        self.status = new_status
+        self.done = (new_status == "Completado")
+
+    def toggle_done(self) -> None:
+        if self.done:
+            self.done = False
+            self.status = "En progreso"
+        else:
+            self.done = True
+            self.status = "Completado"
 
 @dataclass
 class Tag:
@@ -628,6 +647,7 @@ class Task:
     id: int
     text: str
     done: bool = False
+    status: str = "En progreso"
     created_at: str = ""
     group_id: Optional[int] = None
     due_date: Optional[str] = None
@@ -654,6 +674,24 @@ class Task:
             self.voice_notes = []
         if self.canvas_list is None:
             self.canvas_list = []
+        if self.done:
+            self.status = "Completado"
+        elif self.status == "Completado":
+            self.done = True
+        elif not self.status:
+            self.status = "En progreso"
+
+    def set_status(self, new_status: str) -> None:
+        self.status = new_status
+        self.done = (new_status == "Completado")
+
+    def toggle_done(self) -> None:
+        if self.done:
+            self.done = False
+            self.status = "En progreso"
+        else:
+            self.done = True
+            self.status = "Completado"
 
 @dataclass
 class Group:
@@ -772,10 +810,20 @@ class SubtasksModal(ModalScreen[list]):
             filtered = [s for s in filtered if query_lower in s.text.lower()]
 
         if self.filter_statuses:
-            if "done" in self.filter_statuses and "pending" not in self.filter_statuses:
-                filtered = [s for s in filtered if s.done]
-            elif "pending" in self.filter_statuses and "done" not in self.filter_statuses:
-                filtered = [s for s in filtered if not s.done]
+            res = []
+            for s in filtered:
+                st = getattr(s, "status", "Completado" if s.done else "En progreso")
+                if "completed" in self.filter_statuses and (s.done or st == "Completado"):
+                    res.append(s)
+                elif "in_progress" in self.filter_statuses and (not s.done and st == "En progreso"):
+                    res.append(s)
+                elif "on_hold" in self.filter_statuses and (not s.done and st == "En espera"):
+                    res.append(s)
+                elif "pending" in self.filter_statuses and not s.done:
+                    res.append(s)
+                elif "done" in self.filter_statuses and s.done:
+                    res.append(s)
+            filtered = res
 
         if self.filter_tag_ids:
             filtered = [s for s in filtered if s.tags and any(tag_id in s.tags for tag_id in self.filter_tag_ids)]
@@ -826,9 +874,10 @@ class SubtasksModal(ModalScreen[list]):
 
     def _get_ordered_subtasks(self) -> list[Subtask]:
         filtered = self._filter_subtasks()
-        pending = [s for s in filtered if not s.done]
-        completed = [s for s in filtered if s.done]
-        return pending + completed
+        in_progress = [s for s in filtered if not s.done and getattr(s, 'status', 'En progreso') == 'En progreso']
+        on_hold = [s for s in filtered if not s.done and getattr(s, 'status', 'En progreso') == 'En espera']
+        completed = [s for s in filtered if s.done or getattr(s, 'status', 'En progreso') == 'Completado']
+        return in_progress + on_hold + completed
 
     async def _render_subtask_row(self, subtask: Subtask, widget_id: str, is_selected: bool, container: Container) -> None:
         item = Horizontal(id=widget_id, classes="subtask-item")
@@ -913,13 +962,23 @@ class SubtasksModal(ModalScreen[list]):
             if self.selected_index >= len(ordered_subtasks):
                 self.selected_index = max(0, len(ordered_subtasks) - 1)
 
-            pending = [s for s in filtered_subtasks if not s.done]
-            completed = [s for s in filtered_subtasks if s.done]
+            in_progress = [s for s in filtered_subtasks if not s.done and getattr(s, 'status', 'En progreso') == 'En progreso']
+            on_hold = [s for s in filtered_subtasks if not s.done and getattr(s, 'status', 'En progreso') == 'En espera']
+            completed = [s for s in filtered_subtasks if s.done or getattr(s, 'status', 'En progreso') == 'Completado']
 
-            for s in pending:
-                idx = filtered_subtasks.index(s)
-                is_sel = (ordered_subtasks.index(s) == self.selected_index)
-                await self._render_subtask_row(s, f"subtask-{idx}", is_sel, subtasks_list)
+            if in_progress:
+                await subtasks_list.mount(Static("── En progreso ──", id="in-progress-separator"))
+                for s in in_progress:
+                    idx = filtered_subtasks.index(s)
+                    is_sel = (ordered_subtasks.index(s) == self.selected_index)
+                    await self._render_subtask_row(s, f"subtask-{idx}", is_sel, subtasks_list)
+
+            if on_hold:
+                await subtasks_list.mount(Static("── En espera ──", id="on-hold-separator"))
+                for s in on_hold:
+                    idx = filtered_subtasks.index(s)
+                    is_sel = (ordered_subtasks.index(s) == self.selected_index)
+                    await self._render_subtask_row(s, f"subtask-{idx}", is_sel, subtasks_list)
 
             if completed:
                 await subtasks_list.mount(Static("── Completadas ──", id="completed-separator"))
@@ -997,6 +1056,8 @@ class SubtasksModal(ModalScreen[list]):
         def on_result(result: Optional[dict]) -> None:
             if result:
                 subtask.text = result["text"]
+                if "status" in result:
+                    subtask.set_status(result["status"])
                 subtask.comments = result.get("comments", [])
                 subtask.tags = result.get("tags", [])
                 subtask.priority = result.get("priority", 0)
@@ -1017,7 +1078,8 @@ class SubtasksModal(ModalScreen[list]):
                            canvas_list=getattr(subtask, 'canvas_list', []),
                            global_notes=getattr(self.app, 'notes', []),
                            global_voice_notes=getattr(self.app, 'voice_notes', []),
-                           global_canvas_list=getattr(self.app, 'canvas_list', [])),
+                           global_canvas_list=getattr(self.app, 'canvas_list', []),
+                           status=getattr(subtask, 'status', 'En progreso')),
             on_result
         )
     
@@ -1071,7 +1133,8 @@ class SubtasksModal(ModalScreen[list]):
                 current_status_filters=self.filter_statuses,
                 current_priority_filters=self.filter_priorities,
                 all_tags=self.all_tags,
-                available_dates=unique_dates
+                available_dates=unique_dates,
+                title="🔍 Filtrar Subtareas"
             ),
             on_result
         )
@@ -1882,7 +1945,8 @@ class EditSubtaskModal(ModalScreen[Optional[dict]]):
                  selected_tags: list = None, priority: int = 0, due_date: str = "",
                  notes: list[Note] = None, voice_notes: list[VoiceNote] = None, canvas_list: list[Canvas] = None,
                  next_note_id: int = 1, next_voice_note_id: int = 1, next_canvas_id: int = 1,
-                 global_notes: list = None, global_voice_notes: list = None, global_canvas_list: list = None, **kwargs) -> None:
+                 global_notes: list = None, global_voice_notes: list = None, global_canvas_list: list = None,
+                 status: str = "En progreso", **kwargs) -> None:
         super().__init__(**kwargs)
         self.subtask_text = subtask_text
         self.comments = comments or []
@@ -1900,12 +1964,18 @@ class EditSubtaskModal(ModalScreen[Optional[dict]]):
         self.global_notes = global_notes or []
         self.global_voice_notes = global_voice_notes or []
         self.global_canvas_list = global_canvas_list or []
+        self.status = status if status in ("En progreso", "En espera", "Completado") else "En progreso"
     
     def compose(self) -> ComposeResult:
         with VerticalScroll():
             yield Label("✏️ Editar Subtarea", classes="modal-title")
             yield Label("Texto:", classes="section-label")
             yield UndoableInput(value=self.subtask_text, id="subtask-input")
+
+            yield Label("Estado:", classes="section-label")
+            with Horizontal(classes="info-row"):
+                yield Label(self._format_status(), id="status-display", classes="info-display")
+                yield Button("🔄 Cambiar", id="manage-status")
 
             yield Label("Etiquetas:", classes="section-label")
             with Horizontal(classes="info-row"):
@@ -1945,6 +2015,18 @@ class EditSubtaskModal(ModalScreen[Optional[dict]]):
             with Horizontal(classes="button-row"):
                 yield Button("Guardar", variant="primary", id="save")
                 yield Button("Cancelar", variant="default", id="cancel")
+    
+    def _format_status(self) -> str:
+        icons = {"En progreso": "🔄 En progreso", "En espera": "⏳ En espera", "Completado": "✅ Completado"}
+        return icons.get(self.status, "🔄 En progreso")
+
+    @on(Button.Pressed, "#manage-status")
+    def on_manage_status(self) -> None:
+        def on_result(res: Optional[str]) -> None:
+            if res:
+                self.status = res
+                self.query_one("#status-display", Label).update(self._format_status())
+        self.app.push_screen(StatusPickerModal(self.status), on_result)
     
     def _format_tags(self) -> str:
         if not self.selected_tags:
@@ -2080,6 +2162,7 @@ class EditSubtaskModal(ModalScreen[Optional[dict]]):
 
         self.dismiss({
             "text": text,
+            "status": self.status,
             "comments": self.comments,
             "tags": self.selected_tags,
             "priority": self.priority,
@@ -2128,6 +2211,8 @@ class SubtaskRowWidget(Static):
     SubtaskRowWidget .subtask-canvas { width: 5; height: 1; text-align: right; color: $warning; }
     SubtaskRowWidget .subtask-comments { width: 5; height: 1; text-align: right; color: $primary; }
     SubtaskRowWidget .subtask-date { width: 8; height: 1; text-align: right; color: $warning; }
+    SubtaskRowWidget .subtask-status { width: 14; height: 1; text-align: right; color: $accent; }
+    SubtaskRowWidget.done .subtask-status { color: $text-muted; }
     """
 
     def __init__(self, subtask: Subtask, parent_task: Task = None, all_tags: list = None, **kwargs) -> None:
@@ -2187,16 +2272,21 @@ class SubtaskRowWidget(Static):
             except: pass
         yield Label(date_str, classes="subtask-date")
 
+        st_text = "⏳ En espera" if getattr(self.subtask, "status", "") == "En espera" else ("✅ Completado" if self.subtask.done else "🔄 En progreso")
+        yield Label(st_text, classes="subtask-status")
+
     def on_mount(self) -> None:
         if self.subtask.done:
             self.add_class("done")
 
     def toggle_done(self) -> None:
-        self.subtask.done = not self.subtask.done
+        self.subtask.toggle_done()
         self.set_class(self.subtask.done, "done")
         try:
             checkbox_label = self.query_one(".subtask-checkbox", Label)
             checkbox_label.update("☑" if self.subtask.done else "☐")
+            status_label = self.query_one(".subtask-status", Label)
+            status_label.update("✅ Completado" if self.subtask.done else "🔄 En progreso")
         except Exception:
             pass
 
@@ -2236,6 +2326,8 @@ class TaskWidget(Static):
     TaskWidget .task-group { width: 20; height: 1; text-align: right; color: $text-muted; }
     TaskWidget .task-date { width: 8; height: 1; text-align: right; color: $warning; }
     TaskWidget .task-time { width: 17; height: 1; text-align: right; color: $text-muted; }
+    TaskWidget .task-status { width: 14; height: 1; text-align: right; color: $accent; }
+    TaskWidget.done .task-status { color: $text-muted; }
     TaskWidget.done .task-text { text-style: strike; color: $text-muted; }
     TaskWidget.done .checkbox { color: $success; }
     TaskWidget.done .task-date { color: $text-muted; }
@@ -2333,6 +2425,8 @@ class TaskWidget(Static):
             except: pass
         yield Label(date_str, classes="task-date")
         yield Label(format_datetime_display(self.task_data.created_at), classes="task-time")
+        status_str = "⏳ En espera" if getattr(self.task_data, "status", "") == "En espera" else ("✅ Completado" if self.task_data.done else "🔄 En progreso")
+        yield Label(status_str, classes="task-status")
     
     def _format_group_name(self) -> str:
         if self.task_data.group_id is None:
@@ -2354,9 +2448,13 @@ class TaskWidget(Static):
         self.set_class(value, "selected")
     
     def toggle_done(self) -> None:
-        self.task_data.done = not self.task_data.done
+        self.task_data.toggle_done()
         self.set_class(self.task_data.done, "done")
-        self.query_one(".checkbox", Label).update("☑" if self.task_data.done else "☐")
+        try:
+            self.query_one(".checkbox", Label).update("☑" if self.task_data.done else "☐")
+            self.query_one(".task-status", Label).update("✅ Completado" if self.task_data.done else "🔄 En progreso")
+        except Exception:
+            pass
     
     def on_mount(self) -> None:
         if self.task_data.done:
@@ -2913,8 +3011,112 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
     def on_cancel_btn(self) -> None:
         self.dismiss(None)
 
+class StatusPickerModal(ModalScreen[Optional[str]]):
+    DEFAULT_CSS = """
+    StatusPickerModal { align: center middle; }
+    StatusPickerModal > VerticalScroll {
+        width: 40; height: auto; border: thick $primary;
+        background: $surface; padding: 1 2;
+    }
+    StatusPickerModal .modal-title { text-align: center; text-style: bold; width: 100%; height: 1; margin-bottom: 1; }
+    StatusPickerModal #status-picker-list { width: 100%; height: auto; padding: 1; }
+    StatusPickerModal .status-picker-item {
+        width: 100%; height: 3; padding: 0 1;
+        border: solid $primary-background; margin-bottom: 1;
+        content-align: center middle;
+    }
+    StatusPickerModal .status-picker-item:hover { background: $boost; }
+    StatusPickerModal .status-picker-item.selected { border: solid $accent; background: $surface-lighten-1; }
+    StatusPickerModal .hint { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
+    StatusPickerModal .button-row { width: 100%; height: 3; align: center middle; }
+    StatusPickerModal Button { margin: 0 1; }
+    """
+    BINDINGS = [
+        Binding("escape", "cancel", show=False),
+        Binding("up", "move_up", show=False),
+        Binding("down", "move_down", show=False),
+        Binding("k", "move_up", show=False),
+        Binding("j", "move_down", show=False),
+        Binding("enter", "select", show=False),
+    ]
+
+    def __init__(self, current_status: str = "En progreso", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.statuses = [
+            ("🔄 En progreso", "En progreso"),
+            ("⏳ En espera", "En espera"),
+            ("✅ Completado", "Completado")
+        ]
+        self.current_status = current_status
+        self.selected_index = 0
+        for i, (_, val) in enumerate(self.statuses):
+            if val == current_status:
+                self.selected_index = i
+                break
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll():
+            yield Label("🔄 Seleccionar Estado", classes="modal-title")
+            yield Container(id="status-picker-list")
+            yield Label("↑↓ Navegar | Enter: Seleccionar | Esc: Cancelar", classes="hint")
+            with Horizontal(classes="button-row"):
+                yield Button("Seleccionar", variant="primary", id="select")
+                yield Button("Cancelar", variant="default", id="cancel")
+
+    async def on_mount(self) -> None:
+        await self.refresh_list()
+
+    async def refresh_list(self) -> None:
+        container = self.query_one("#status-picker-list", Container)
+        await container.remove_children()
+        for i, (label, val) in enumerate(self.statuses):
+            item = Static(label, id=f"status-opt-{i}", classes="status-picker-item")
+            await container.mount(item)
+            if i == self.selected_index:
+                item.add_class("selected")
+
+    def update_selection(self) -> None:
+        for i in range(len(self.statuses)):
+            try:
+                item = self.query_one(f"#status-opt-{i}", Static)
+                item.set_class(i == self.selected_index, "selected")
+            except: pass
+
+    def action_move_up(self) -> None:
+        if self.selected_index > 0:
+            self.selected_index -= 1
+            self.update_selection()
+
+    def action_move_down(self) -> None:
+        if self.selected_index < len(self.statuses) - 1:
+            self.selected_index += 1
+            self.update_selection()
+
+    @on(Button.Pressed, "#select")
+    def on_select_btn(self) -> None:
+        self.action_select()
+
+    def action_select(self) -> None:
+        selected_val = self.statuses[self.selected_index][1]
+        self.dismiss(selected_val)
+
+    @on(Button.Pressed, "#cancel")
+    def on_cancel_btn(self) -> None:
+        self.action_cancel()
+
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+    def on_click(self, event: events.Click) -> None:
+        for i in range(len(self.statuses)):
+            try:
+                item = self.query_one(f"#status-opt-{i}", Static)
+                if event.widget == item:
+                    self.selected_index = i
+                    self.action_select()
+                    break
+            except Exception:
+                pass
 
 class PriorityPickerModal(ModalScreen[Optional[int]]):
     DEFAULT_CSS = """
@@ -6907,7 +7109,7 @@ class StatusFilterPickerModal(ModalScreen[Optional[list[str]]]):
     def __init__(self, current_filters: list[str], **kwargs) -> None:
         super().__init__(**kwargs)
         self.selected_status_ids = list(current_filters)
-        self.options = ["pending", "completed"]
+        self.options = ["in_progress", "on_hold", "completed"]
         self.selected_index = 0
     
     def compose(self) -> ComposeResult:
@@ -6927,7 +7129,8 @@ class StatusFilterPickerModal(ModalScreen[Optional[list[str]]]):
         await status_list.remove_children()
         
         options_display = [
-            ("⏳ Pendientes", "pending"),
+            ("🔄 En progreso", "in_progress"),
+            ("⏳ En espera", "on_hold"),
             ("✅ Completadas", "completed")
         ]
         
@@ -7126,8 +7329,9 @@ class FilterModal(ModalScreen[Optional[dict]]):
     
     def __init__(self, current_date_filters: list[str], current_tag_filters: list[int],
                  current_status_filters: list[str], current_priority_filters: list[int],
-                 all_tags: list[Tag], available_dates: list[str], **kwargs) -> None:
+                 all_tags: list[Tag], available_dates: list[str], title: str = "🔍 Filtrar Tareas", **kwargs) -> None:
         super().__init__(**kwargs)
+        self.modal_title_text = title
         self.date_filters = list(current_date_filters)
         self.tag_filters = list(current_tag_filters)
         self.status_filters = list(current_status_filters)
@@ -7137,7 +7341,7 @@ class FilterModal(ModalScreen[Optional[dict]]):
     
     def compose(self) -> ComposeResult:
         with VerticalScroll():
-            yield Label("🔍 Filtrar Tareas", classes="modal-title")
+            yield Label(self.modal_title_text, classes="modal-title")
             yield Label("Fecha:", classes="section-label")
             with Horizontal(classes="filter-row"):
                 yield Label(self._format_date_filter(), id="date-display", classes="filter-display")
@@ -7195,6 +7399,10 @@ class FilterModal(ModalScreen[Optional[dict]]):
         for status in self.status_filters:
             if status == "completed":
                 status_names.append("Completadas")
+            elif status == "in_progress":
+                status_names.append("En progreso")
+            elif status == "on_hold":
+                status_names.append("En espera")
             elif status == "pending":
                 status_names.append("Pendientes")
         return f"✅ {', '.join(status_names)}" if status_names else "Todos los estados"
@@ -7446,6 +7654,7 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
                 notes: list = None, next_note_id: int = 1,
                 voice_notes: list = None, next_voice_note_id: int = 1,
                 canvas_list: list = None, next_canvas_id: int = 1,
+                current_status: str = "En progreso",
                 **kwargs) -> None:
         super().__init__(**kwargs)
         self.task_text = task_text
@@ -7457,6 +7666,7 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
         self.all_tags = all_tags or []
         self.selected_tag_ids = list(selected_tag_ids) if selected_tag_ids else []
         self.selected_priority = current_priority
+        self.selected_status = current_status if current_status in ("En progreso", "En espera", "Completado") else "En progreso"
         self.subtasks = subtasks or []
         self.next_subtask_id = next_subtask_id
         self.notes = notes or []
@@ -7476,6 +7686,10 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
             yield Label("✏️  Editar Tarea", classes="modal-title")
             yield Label("Texto:", classes="section-label")
             yield UndoableInput(value=self.task_text, id="task-input")
+            yield Label("Estado:", classes="section-label")
+            with Horizontal(classes="priority-row"):
+                yield Label(self._format_status(), id="status-display", classes="priority-display")
+                yield Button("🔄 Cambiar", id="change-status")
             yield Label("Grupo:", classes="section-label")
             with Horizontal(classes="group-row"):
                 yield Label(self._format_group(self.selected_group_id), id="group-display", classes="group-display")
@@ -7516,6 +7730,18 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
             with Horizontal(classes="button-row"):
                 yield Button("Guardar", variant="primary", id="save")
                 yield Button("Cancelar", variant="default", id="cancel")
+
+    def _format_status(self) -> str:
+        icons = {"En progreso": "🔄 En progreso", "En espera": "⏳ En espera", "Completado": "✅ Completado"}
+        return icons.get(self.selected_status, "🔄 En progreso")
+
+    @on(Button.Pressed, "#change-status")
+    def on_change_status(self) -> None:
+        def on_result(result: Optional[str]) -> None:
+            if result:
+                self.selected_status = result
+                self.query_one("#status-display", Label).update(self._format_status())
+        self.app.push_screen(StatusPickerModal(self.selected_status), on_result)
 
     def _format_date(self, date_str: Optional[str]) -> str:
         if not date_str: return "Sin fecha"
@@ -7709,6 +7935,7 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
         
         self.dismiss({
             "text": text, 
+            "status": self.selected_status,
             "date": self.selected_date,
             "group_id": self.selected_group_id,
             "comments": self.comments,
@@ -7733,6 +7960,7 @@ class EditTaskModal(ModalScreen[Optional[dict]]):
             text = self.query_one("#task-input", Input).value.strip() or self.task_text
             self.dismiss({
                 "text": text,
+                "status": self.selected_status,
                 "date": self.selected_date,
                 "group_id": self.selected_group_id,
                 "comments": self.comments,
@@ -8997,7 +9225,7 @@ class TodoApp(App):
     #calendar-hint { width: 100%; text-align: center; color: $text-muted; padding: 1; }
     #empty-message { width: 100%; height: 100%; content-align: center middle; color: $text-muted; text-style: italic; }
     #stats { dock: bottom; width: 100%; height: 1; background: $primary-background; color: $text; padding: 0 2; }
-    #completed-separator, #completed-separator-subtasks { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
+    #completed-separator, #completed-separator-subtasks, #in-progress-separator, #on-hold-separator, #in-progress-separator-subtasks, #on-hold-separator-subtasks, .status-subseparator { width: 100%; height: 1; text-align: center; color: $text-muted; margin: 1 0; }
     .section-separator-main {
         width: 100%;
         height: auto;
@@ -9371,8 +9599,12 @@ class TodoApp(App):
         if self.filter_statuses:
             filtered = []
             for t in tasks:
+                st = getattr(t, "status", "Completado" if t.done else "En progreso")
                 for status in self.filter_statuses:
-                    if (status == "completed" and t.done) or (status == "pending" and not t.done):
+                    if (status == "completed" and (t.done or st == "Completado")) or \
+                       (status == "in_progress" and (not t.done and st == "En progreso")) or \
+                       (status == "on_hold" and (not t.done and st == "En espera")) or \
+                       (status == "pending" and not t.done):
                         filtered.append(t)
                         break
             tasks = filtered
@@ -9453,9 +9685,10 @@ class TodoApp(App):
     def _get_ordered_subtasks(self, subtask_items: list[tuple[Task, Subtask]] = None) -> list[tuple[Task, Subtask]]:
         if subtask_items is None:
             subtask_items = self._get_filtered_all_subtasks()
-        pending = [item for item in subtask_items if not item[1].done]
-        completed = [item for item in subtask_items if item[1].done]
-        return pending + completed
+        in_progress = [item for item in subtask_items if not item[1].done and getattr(item[1], 'status', 'En progreso') == 'En progreso']
+        on_hold = [item for item in subtask_items if not item[1].done and getattr(item[1], 'status', 'En progreso') == 'En espera']
+        completed = [item for item in subtask_items if item[1].done or getattr(item[1], 'status', 'En progreso') == 'Completado']
+        return in_progress + on_hold + completed
 
     async def _refresh_subtasks_list(self, task_list: Container) -> None:
         subtask_items = self._get_filtered_all_subtasks()
@@ -9464,13 +9697,23 @@ class TodoApp(App):
             msg = "No hay subtareas. Pulsa 'a' para añadir una subtarea a una tarea."
             await task_list.mount(Label(msg, id="empty-message"))
         else:
-            pending = [item for item in subtask_items if not item[1].done]
-            completed = [item for item in subtask_items if item[1].done]
+            in_progress = [item for item in subtask_items if not item[1].done and getattr(item[1], 'status', 'En progreso') == 'En progreso']
+            on_hold = [item for item in subtask_items if not item[1].done and getattr(item[1], 'status', 'En progreso') == 'En espera']
+            completed = [item for item in subtask_items if item[1].done or getattr(item[1], 'status', 'En progreso') == 'Completado']
 
-            for (task, subtask) in pending:
-                idx = subtask_items.index((task, subtask))
-                item_widget = SubtaskRowWidget(subtask, parent_task=task, all_tags=self.tags, id=f"subtask-row-{idx}")
-                await task_list.mount(item_widget)
+            if in_progress:
+                await task_list.mount(Static("── En progreso ──", id="in-progress-separator-subtasks"))
+                for (task, subtask) in in_progress:
+                    idx = subtask_items.index((task, subtask))
+                    item_widget = SubtaskRowWidget(subtask, parent_task=task, all_tags=self.tags, id=f"subtask-row-{idx}")
+                    await task_list.mount(item_widget)
+
+            if on_hold:
+                await task_list.mount(Static("── En espera ──", id="on-hold-separator-subtasks"))
+                for (task, subtask) in on_hold:
+                    idx = subtask_items.index((task, subtask))
+                    item_widget = SubtaskRowWidget(subtask, parent_task=task, all_tags=self.tags, id=f"subtask-row-{idx}")
+                    await task_list.mount(item_widget)
 
             if completed:
                 await task_list.mount(Static("── Completadas ──", id="completed-separator"))
@@ -9590,23 +9833,31 @@ class TodoApp(App):
                 self.next_task_id = max(self.next_task_id, t.id + 1)
             seen_ids.add(t.id)
 
-        pending = [t for t in ordered if not t.done]
-        completed = [t for t in ordered if t.done]
+        in_progress = [t for t in ordered if not t.done and getattr(t, 'status', 'En progreso') == 'En progreso']
+        on_hold = [t for t in ordered if not t.done and getattr(t, 'status', 'En progreso') == 'En espera']
+        completed = [t for t in ordered if t.done or getattr(t, 'status', 'En progreso') == 'Completado']
         
         if not ordered:
             msg = "No hay tareas. Pulsa 'a' para añadir una."
             await task_list.mount(Label(msg, id="empty-message"))
         else:
-            for t in pending:
-                w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=f"task-{t.id}")
-                await task_list.mount(w)
+            if in_progress:
+                await task_list.mount(Static("── En progreso ──", id="in-progress-separator"))
+                for t in in_progress:
+                    w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=f"task-{t.id}")
+                    await task_list.mount(w)
+            if on_hold:
+                await task_list.mount(Static("── En espera ──", id="on-hold-separator"))
+                for t in on_hold:
+                    w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=f"task-{t.id}")
+                    await task_list.mount(w)
             if completed:
                 await task_list.mount(Static("── Completadas ──", id="completed-separator"))
                 for t in completed:
                     w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=f"task-{t.id}")
                     await task_list.mount(w)
         
-        self._update_selection(pending, completed)
+        self._update_selection(in_progress + on_hold + completed)
 
     async def _refresh_notes_list(self, task_list: Container) -> None:
         filtered_notes = self._get_filtered_notes()
@@ -9782,8 +10033,11 @@ class TodoApp(App):
         else:
             day_tasks.update("No hay tareas ni subtareas para este día")
     
-    def _update_selection(self, pending: list, completed: list) -> None:
-        all_tasks = pending + completed
+    def _update_selection(self, all_tasks: list = None, completed: list = None) -> None:
+        if all_tasks is None:
+            all_tasks = self._get_ordered_tasks()
+        elif completed is not None:
+            all_tasks = all_tasks + completed
         if not all_tasks:
             self.selected_index = 0
             return
@@ -9796,48 +10050,51 @@ class TodoApp(App):
     
     def _get_ordered_tasks(self) -> list:
         c = self._get_current_tasks()
-        pending = [t for t in c if not t.done]
-        completed = [t for t in c if t.done]
+        in_progress = [t for t in c if not t.done and getattr(t, 'status', 'En progreso') == 'En progreso']
+        on_hold = [t for t in c if not t.done and getattr(t, 'status', 'En progreso') == 'En espera']
+        completed = [t for t in c if t.done or getattr(t, 'status', 'En progreso') == 'Completado']
         
         alpha_criterion = self.sort_criteria.get("alphabetical")
         if alpha_criterion == "alpha_asc":
-            pending.sort(key=lambda t: t.text.lower())
+            in_progress.sort(key=lambda t: t.text.lower())
+            on_hold.sort(key=lambda t: t.text.lower())
             completed.sort(key=lambda t: t.text.lower())
         elif alpha_criterion == "alpha_desc":
-            pending.sort(key=lambda t: t.text.lower(), reverse=True)
+            in_progress.sort(key=lambda t: t.text.lower(), reverse=True)
+            on_hold.sort(key=lambda t: t.text.lower(), reverse=True)
             completed.sort(key=lambda t: t.text.lower(), reverse=True)
         
         date_criterion = self.sort_criteria.get("date")
         if date_criterion == "date_asc":
-            pending_with = [t for t in pending if t.due_date]
-            pending_without = [t for t in pending if not t.due_date]
-            pending_with.sort(key=lambda t: t.due_date)
-            pending = pending_with + pending_without
-            
-            completed_with = [t for t in completed if t.due_date]
-            completed_without = [t for t in completed if not t.due_date]
-            completed_with.sort(key=lambda t: t.due_date)
-            completed = completed_with + completed_without
+            def sort_date_asc(lst):
+                w = [t for t in lst if t.due_date]
+                wo = [t for t in lst if not t.due_date]
+                w.sort(key=lambda t: t.due_date)
+                return w + wo
+            in_progress = sort_date_asc(in_progress)
+            on_hold = sort_date_asc(on_hold)
+            completed = sort_date_asc(completed)
         elif date_criterion == "date_desc":
-            pending_with = [t for t in pending if t.due_date]
-            pending_without = [t for t in pending if not t.due_date]
-            pending_with.sort(key=lambda t: t.due_date, reverse=True)
-            pending = pending_with + pending_without
-            
-            completed_with = [t for t in completed if t.due_date]
-            completed_without = [t for t in completed if not t.due_date]
-            completed_with.sort(key=lambda t: t.due_date, reverse=True)
-            completed = completed_with + completed_without
+            def sort_date_desc(lst):
+                w = [t for t in lst if t.due_date]
+                wo = [t for t in lst if not t.due_date]
+                w.sort(key=lambda t: t.due_date, reverse=True)
+                return w + wo
+            in_progress = sort_date_desc(in_progress)
+            on_hold = sort_date_desc(on_hold)
+            completed = sort_date_desc(completed)
         
         priority_criterion = self.sort_criteria.get("priority")
         if priority_criterion == "priority_desc":
-            pending.sort(key=lambda t: t.priority, reverse=True)
+            in_progress.sort(key=lambda t: t.priority, reverse=True)
+            on_hold.sort(key=lambda t: t.priority, reverse=True)
             completed.sort(key=lambda t: t.priority, reverse=True)
         elif priority_criterion == "priority_asc":
-            pending.sort(key=lambda t: t.priority)
+            in_progress.sort(key=lambda t: t.priority)
+            on_hold.sort(key=lambda t: t.priority)
             completed.sort(key=lambda t: t.priority)
         
-        return pending + completed
+        return in_progress + on_hold + completed
     
     def update_selection(self) -> None:
         ordered = self._get_ordered_tasks()
@@ -9958,6 +10215,10 @@ class TodoApp(App):
                 for status in self.filter_statuses:
                     if status == "completed":
                         status_names.append("Completadas")
+                    elif status == "in_progress":
+                        status_names.append("En progreso")
+                    elif status == "on_hold":
+                        status_names.append("En espera")
                     elif status == "pending":
                         status_names.append("Pendientes")
                 if status_names:
@@ -10067,9 +10328,7 @@ class TodoApp(App):
             ordered = self._get_ordered_tasks()
             if ordered and self.selected_index > 0:
                 self.selected_index -= 1
-                pending = [t for t in ordered if not t.done]
-                completed = [t for t in ordered if t.done]
-                self._update_selection(pending, completed)
+                self._update_selection(ordered)
     
     async def action_nav_down(self) -> None:
         if self.main_search_focused: return
@@ -10134,9 +10393,7 @@ class TodoApp(App):
             ordered = self._get_ordered_tasks()
             if ordered and self.selected_index < len(ordered) - 1:
                 self.selected_index += 1
-                pending = [t for t in ordered if not t.done]
-                completed = [t for t in ordered if t.done]
-                self._update_selection(pending, completed)
+                self._update_selection(ordered)
 
     async def _refresh_general_view(self, task_list: Container) -> None:
         items = []
@@ -10144,20 +10401,30 @@ class TodoApp(App):
         # 1. Tareas
         await task_list.mount(Static("── 📋 TAREAS ──", classes="section-separator-main"))
         ordered_tasks = self._get_ordered_tasks()
-        pending = [t for t in ordered_tasks if not t.done]
-        completed = [t for t in ordered_tasks if t.done]
+        in_prog_tasks = [t for t in ordered_tasks if not t.done and getattr(t, 'status', 'En progreso') == 'En progreso']
+        on_hold_tasks = [t for t in ordered_tasks if not t.done and getattr(t, 'status', 'En progreso') == 'En espera']
+        completed_tasks = [t for t in ordered_tasks if t.done or getattr(t, 'status', 'En progreso') == 'Completado']
 
         if not ordered_tasks:
             await task_list.mount(Label(" (Sin tareas) ", classes="empty-section-label"))
         else:
-            for t in pending:
-                w_id = f"task-{t.id}"
-                w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=w_id)
-                await task_list.mount(w)
-                items.append(("task", t, w_id))
-            if completed:
+            if in_prog_tasks:
+                await task_list.mount(Static("── En progreso ──", id="in-progress-separator"))
+                for t in in_prog_tasks:
+                    w_id = f"task-{t.id}"
+                    w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=w_id)
+                    await task_list.mount(w)
+                    items.append(("task", t, w_id))
+            if on_hold_tasks:
+                await task_list.mount(Static("── En espera ──", id="on-hold-separator"))
+                for t in on_hold_tasks:
+                    w_id = f"task-{t.id}"
+                    w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=w_id)
+                    await task_list.mount(w)
+                    items.append(("task", t, w_id))
+            if completed_tasks:
                 await task_list.mount(Static("── Completadas ──", id="completed-separator"))
-                for t in completed:
+                for t in completed_tasks:
                     w_id = f"task-{t.id}"
                     w = TaskWidget(t, all_tags=self.tags, all_groups=self.groups, id=w_id)
                     await task_list.mount(w)
@@ -10169,19 +10436,31 @@ class TodoApp(App):
         if not filtered_subtasks:
             await task_list.mount(Label(" (Sin subtareas) ", classes="empty-section-label"))
         else:
-            pending_subtasks = [s for s in filtered_subtasks if not s[1].done]
-            completed_subtasks = [s for s in filtered_subtasks if s[1].done]
+            in_prog_sub = [s for s in filtered_subtasks if not s[1].done and getattr(s[1], 'status', 'En progreso') == 'En progreso']
+            on_hold_sub = [s for s in filtered_subtasks if not s[1].done and getattr(s[1], 'status', 'En progreso') == 'En espera']
+            completed_sub = [s for s in filtered_subtasks if s[1].done or getattr(s[1], 'status', 'En progreso') == 'Completado']
 
-            for parent_task, subtask in pending_subtasks:
-                s_idx = filtered_subtasks.index((parent_task, subtask))
-                w_id = f"general-subtask-{s_idx}"
-                w = SubtaskRowWidget(subtask, parent_task=parent_task, all_tags=self.tags, id=w_id)
-                await task_list.mount(w)
-                items.append(("subtask", subtask, w_id))
+            if in_prog_sub:
+                await task_list.mount(Static("── En progreso ──", id="in-progress-separator-subtasks"))
+                for parent_task, subtask in in_prog_sub:
+                    s_idx = filtered_subtasks.index((parent_task, subtask))
+                    w_id = f"general-subtask-{s_idx}"
+                    w = SubtaskRowWidget(subtask, parent_task=parent_task, all_tags=self.tags, id=w_id)
+                    await task_list.mount(w)
+                    items.append(("subtask", subtask, w_id))
 
-            if completed_subtasks:
+            if on_hold_sub:
+                await task_list.mount(Static("── En espera ──", id="on-hold-separator-subtasks"))
+                for parent_task, subtask in on_hold_sub:
+                    s_idx = filtered_subtasks.index((parent_task, subtask))
+                    w_id = f"general-subtask-{s_idx}"
+                    w = SubtaskRowWidget(subtask, parent_task=parent_task, all_tags=self.tags, id=w_id)
+                    await task_list.mount(w)
+                    items.append(("subtask", subtask, w_id))
+
+            if completed_sub:
                 await task_list.mount(Static("── Completadas ──", id="completed-separator-subtasks"))
-                for parent_task, subtask in completed_subtasks:
+                for parent_task, subtask in completed_sub:
                     s_idx = filtered_subtasks.index((parent_task, subtask))
                     w_id = f"general-subtask-{s_idx}"
                     w = SubtaskRowWidget(subtask, parent_task=parent_task, all_tags=self.tags, id=w_id)
@@ -10751,6 +11030,7 @@ class TodoApp(App):
                 await self.refresh_view()
                 self.update_stats()
         
+        filter_title = "🔍 Filtrar Subtareas" if self.current_group_id == self.SUBTASKS_GROUP_ID else "🔍 Filtrar Tareas"
         self.push_screen(
             FilterModal(
                 self.filter_dates,
@@ -10758,7 +11038,8 @@ class TodoApp(App):
                 self.filter_statuses,
                 self.filter_priorities,
                 self.tags,
-                available_dates
+                available_dates,
+                title=filter_title
             ),
             on_result
         )
@@ -10920,6 +11201,8 @@ class TodoApp(App):
             if result:
                 self._save_undo_state()
                 subtask.text = result["text"]
+                if "status" in result:
+                    subtask.set_status(result["status"])
                 subtask.comments = result.get("comments", [])
                 subtask.tags = result.get("tags", [])
                 subtask.priority = result.get("priority", 0)
@@ -10952,7 +11235,8 @@ class TodoApp(App):
                            canvas_list=getattr(subtask, 'canvas_list', []),
                            global_notes=self.notes,
                            global_voice_notes=self.voice_notes,
-                           global_canvas_list=self.canvas_list),
+                           global_canvas_list=self.canvas_list,
+                           status=getattr(subtask, 'status', 'En progreso')),
             on_result
         )
 
@@ -10982,6 +11266,8 @@ class TodoApp(App):
             if result:
                 self._save_undo_state()
                 subtask.text = result["text"]
+                if "status" in result:
+                    subtask.set_status(result["status"])
                 subtask.comments = result.get("comments", [])
                 subtask.tags = result.get("tags", [])
                 subtask.priority = result.get("priority", 0)
@@ -11014,7 +11300,8 @@ class TodoApp(App):
                            canvas_list=getattr(subtask, 'canvas_list', []),
                            global_notes=self.notes,
                            global_voice_notes=self.voice_notes,
-                           global_canvas_list=self.canvas_list),
+                           global_canvas_list=self.canvas_list,
+                           status=getattr(subtask, 'status', 'En progreso')),
             on_result
         )
 
@@ -11140,6 +11427,8 @@ class TodoApp(App):
             if result:
                 self._save_undo_state()
                 t.text = result["text"]
+                if "status" in result:
+                    t.set_status(result["status"])
                 t.due_date = result["date"]
                 t.comments = result.get("comments", [])
                 t.tags = result.get("tags", [])
@@ -11180,7 +11469,8 @@ class TodoApp(App):
                                     t.comments, next_comment_id, self.tags, t.tags, 
                                     t.priority, t.subtasks, next_subtask_id,
                                     t.notes, next_note_id, t.voice_notes, next_voice_note_id,
-                                    t.canvas_list, next_canvas_id), on_result)
+                                    t.canvas_list, next_canvas_id,
+                                    current_status=getattr(t, 'status', 'En progreso')), on_result)
         
     def action_delete_task(self) -> None:
         if self.main_search_focused: return
@@ -11690,6 +11980,7 @@ class TodoApp(App):
                 "id": t.id,
                 "text": t.text,
                 "done": t.done,
+                "status": getattr(t, "status", "Completado" if t.done else "En progreso"),
                 "created_at": t.created_at,
                 "group_id": t.group_id,
                 "due_date": t.due_date,
@@ -11708,6 +11999,7 @@ class TodoApp(App):
                     "id": s.id,
                     "text": s.text,
                     "done": s.done,
+                    "status": getattr(s, "status", "Completado" if s.done else "En progreso"),
                     "created_at": s.created_at,
                     "due_date": s.due_date,
                     "tags": s.tags if hasattr(s, 'tags') else [],
@@ -11850,6 +12142,7 @@ class TodoApp(App):
                     id=s["id"],
                     text=s["text"],
                     done=s.get("done", False),
+                    status=s.get("status", "Completado" if s.get("done", False) else "En progreso"),
                     created_at=s.get("created_at", ""),
                     due_date=s.get("due_date"),
                     comments=subtask_comments,
@@ -11895,6 +12188,7 @@ class TodoApp(App):
                 id=t["id"],
                 text=t["text"],
                 done=t["done"],
+                status=t.get("status", "Completado" if t.get("done", False) else "En progreso"),
                 created_at=t["created_at"],
                 group_id=t["group_id"],
                 due_date=t["due_date"],
@@ -11993,6 +12287,7 @@ class TodoApp(App):
                     "id": t.id, 
                     "text": t.text, 
                     "done": t.done, 
+                    "status": getattr(t, "status", "Completado" if t.done else "En progreso"),
                     "created_at": t.created_at,
                     "group_id": t.group_id, 
                     "due_date": t.due_date,
@@ -12006,6 +12301,7 @@ class TodoApp(App):
                         "id": s.id,
                         "text": s.text,
                         "done": s.done,
+                        "status": getattr(s, "status", "Completado" if s.done else "En progreso"),
                         "created_at": s.created_at,
                         "due_date": s.due_date,
                         "tags": s.tags if hasattr(s, 'tags') else [],
@@ -12135,6 +12431,7 @@ class TodoApp(App):
                             id=s["id"],
                             text=s["text"],
                             done=s.get("done", False),
+                            status=s.get("status", "Completado" if s.get("done", False) else "En progreso"),
                             created_at=s.get("created_at", ""),
                             due_date=s.get("due_date"),
                             comments=subtask_comments,
@@ -12177,6 +12474,7 @@ class TodoApp(App):
                         id=t["id"], 
                         text=t["text"], 
                         done=t.get("done", False),
+                        status=t.get("status", "Completado" if t.get("done", False) else "En progreso"),
                         created_at=t.get("created_at", ""), 
                         group_id=t.get("group_id"),
                         due_date=t.get("due_date"), 
