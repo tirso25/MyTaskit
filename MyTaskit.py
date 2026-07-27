@@ -2883,8 +2883,30 @@ class CanvasEditorModal(ModalScreen[Optional[dict]]):
 
     async def on_mount(self) -> None:
         self.query_one("#title-input", Input).focus()
-        self.query_one("#canvas-display", Static).styles.width = self.canvas_data.width
+        self._sync_canvas_with_container()
+        try:
+            self.call_after_refresh(self._sync_canvas_with_container)
+        except Exception:
+            pass
         self.render_canvas()
+
+    def _sync_canvas_with_container(self) -> None:
+        try:
+            container = self.query_one(".canvas-container", Container)
+            c_width = container.content_size.width
+            if c_width > 0 and c_width > self.canvas_data.width:
+                diff = c_width - self.canvas_data.width
+                for row in self.canvas_data.grid:
+                    row.extend([" "] * diff)
+                self.canvas_data.width = c_width
+                canvas_display = self.query_one("#canvas-display", Static)
+                canvas_display.styles.width = self.canvas_data.width
+                self.render_canvas()
+            elif c_width > 0:
+                canvas_display = self.query_one("#canvas-display", Static)
+                canvas_display.styles.width = self.canvas_data.width
+        except Exception:
+            pass
 
     def render_canvas(self) -> None:
         grid = self.canvas_data.grid
@@ -6463,6 +6485,7 @@ class CommentsModal(ModalScreen[list[Comment]]):
         Binding("d", "delete_comment", show=False),
         Binding("ctrl+o", "open_link", show=False),
         Binding("enter", "open_link", show=False),
+        Binding("t", "open_link", show=False),
         Binding("v", "view_image", show=False),
         Binding("f", "open_file", show=False),
     ]
@@ -6480,7 +6503,7 @@ class CommentsModal(ModalScreen[list[Comment]]):
         with VerticalScroll():
             yield Label("💬 Comentarios", classes="modal-title")
             yield Container(id="comments-list")
-            yield Label("↑↓ Navegar | a: Añadir | e: Editar | d: Eliminar | Enter: Abrir enlace | v: Ver imagen | f: Abrir archivo | Esc: Cerrar", classes="hint")
+            yield Label("↑↓ Navegar | a: Añadir | e: Editar | d: Eliminar | t/Enter: Enlace | v: Imagen | f: Archivo | Esc: Cerrar", classes="hint")
             with Horizontal(classes="button-row"):
                 yield Button("➕ Añadir", variant="primary", id="add")
                 yield Button("✏️ Editar", variant="default", id="edit")
@@ -9794,11 +9817,11 @@ class TodoApp(App):
         color: #00ff00;
         text-style: bold;
     }
-    #top-bar-container { width: 100%; height: 3; layout: horizontal; }
-    #tabs-container { width: 1fr; height: 3; layout: horizontal; overflow-x: auto; padding: 0 1; }
+    #top-bar-container { width: 100%; height: 4; layout: horizontal; }
+    #tabs-container { width: 1fr; height: 4; layout: horizontal; overflow-x: auto; padding: 0 1; scrollbar-size-horizontal: 1; }
     #header-clock {
         width: 25;
-        height: 3;
+        height: 4;
         content-align: center middle;
         text-align: center;
         border: solid $primary-background;
@@ -9881,6 +9904,8 @@ class TodoApp(App):
         Binding("right", "nav_right", show=False),
         Binding("up", "nav_up", show=False),
         Binding("down", "nav_down", show=False),
+        Binding("shift+left", "scroll_tabs_left", show=False),
+        Binding("shift+right", "scroll_tabs_right", show=False),
         Binding("h", "nav_left", show=False),
         Binding("l", "nav_right", show=False),
         Binding("k", "nav_up", show=False),
@@ -10159,6 +10184,40 @@ class TodoApp(App):
         
         show_next()
     
+    def _scroll_active_tab(self) -> None:
+        try:
+            tabs = self.query_one("#tabs-container", Horizontal)
+            active_tab = None
+            for t in tabs.query(GroupTab):
+                if t.active:
+                    active_tab = t
+                    break
+            if active_tab:
+                try:
+                    tabs.scroll_to_widget(active_tab, animate=False)
+                except Exception:
+                    pass
+                try:
+                    active_tab.scroll_visible(animate=False)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def action_scroll_tabs_left(self) -> None:
+        try:
+            tabs = self.query_one("#tabs-container", Horizontal)
+            tabs.scroll_left()
+        except Exception:
+            pass
+
+    def action_scroll_tabs_right(self) -> None:
+        try:
+            tabs = self.query_one("#tabs-container", Horizontal)
+            tabs.scroll_right()
+        except Exception:
+            pass
+
     async def refresh_tabs(self) -> None:
         tabs = self.query_one("#tabs-container", Horizontal)
         
@@ -10185,6 +10244,11 @@ class TodoApp(App):
                         icon = "📂" if self.current_group_id == g.id else "📁"
                         t.update(f"{icon} {g.name}")
                         t.active = (self.current_group_id == g.id)
+            self._scroll_active_tab()
+            try:
+                self.call_after_refresh(self._scroll_active_tab)
+            except Exception:
+                pass
             return
 
         for child in list(tabs.children):
@@ -10228,6 +10292,12 @@ class TodoApp(App):
                 t = GroupTab(g.id, f"{icon} {g.name}", id=f"tab-{g.id}")
                 await tabs.mount(t)
                 t.active = (self.current_group_id == g.id)
+
+        self._scroll_active_tab()
+        try:
+            self.call_after_refresh(self._scroll_active_tab)
+        except Exception:
+            pass
     
     def _get_current_tasks(self) -> list[Task]:
         if self.current_group_id == self.GENERAL_GROUP_ID:
@@ -11424,12 +11494,20 @@ class TodoApp(App):
 
     async def _prev_group(self) -> None:
         ids = [self.GENERAL_GROUP_ID, None, self.SUBTASKS_GROUP_ID, self.NOTES_GROUP_ID, self.CANVAS_GROUP_ID, self.AUDIO_GROUP_ID, self.TAGS_GROUP_ID] + [g.id for g in self.groups]
-        idx = (ids.index(self.current_group_id) - 1) % len(ids)
+        try:
+            curr_idx = ids.index(self.current_group_id)
+        except ValueError:
+            curr_idx = 0
+        idx = (curr_idx - 1) % len(ids)
         await self._select_group_by_id(ids[idx])
 
     async def _next_group(self) -> None:
         ids = [self.GENERAL_GROUP_ID, None, self.SUBTASKS_GROUP_ID, self.NOTES_GROUP_ID, self.CANVAS_GROUP_ID, self.AUDIO_GROUP_ID, self.TAGS_GROUP_ID] + [g.id for g in self.groups]
-        idx = (ids.index(self.current_group_id) + 1) % len(ids)
+        try:
+            curr_idx = ids.index(self.current_group_id)
+        except ValueError:
+            curr_idx = 0
+        idx = (curr_idx + 1) % len(ids)
         await self._select_group_by_id(ids[idx])
         
     async def action_toggle_calendar(self) -> None:
